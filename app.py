@@ -32,8 +32,8 @@ def _ensure_vector_store() -> str | None:
     try:
         from build_index import build_index
 
-        count = build_index(documents_path=documents_dir(), output_path=destination)
-        return f"已準備 {count} 筆法規檢索資料。"
+        build_index(documents_path=documents_dir(), output_path=destination)
+        return None
     except Exception as exc:
         return f"法規資料尚未準備完成：{exc}"
 
@@ -547,11 +547,8 @@ def main() -> None:
     _initialise_state()
     _inject_styles()
     index_status = _ensure_vector_store()
-    if index_status:
-        if index_status.startswith("法規資料尚未"):
-            st.warning(index_status)
-        else:
-            st.caption(index_status)
+    if index_status and index_status.startswith("法規資料尚未"):
+        st.warning(index_status)
     cover_url = _cover_data_url()
     cover_attribute = (
         " style=\"background-image: linear-gradient(90deg, rgba(8, 42, 40, .88) 0%, "
