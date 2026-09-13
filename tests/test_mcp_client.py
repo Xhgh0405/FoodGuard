@@ -156,3 +156,31 @@ async def test_product_analysis_isolates_one_tool_failure(monkeypatch) -> None:
     assert result["nutrition_label"]["result"]["status"] == "insufficient_evidence"
     assert result["nutrition_label"]["debug_evidence"]["error_type"] == "RuntimeError"
     assert result["nutrition_claim"]["result"]["status"] == "pass"
+
+
+@pytest.mark.anyio
+async def test_representative_questions_use_product_context_and_compact_answer():
+    fake_llm = FakeLLM()
+    questions = [
+        "這個食品有哪些過敏原？",
+        "為什麼奶油乳酪算乳類？",
+        "那雞蛋呢？",
+        "高蛋白是什麼意思？",
+        "這個可以標高蛋白嗎？",
+        "高血壓的人這個要注意什麼？",
+        "為什麼？",
+    ]
+    async with FoodGuardMCPClient(llm_client=fake_llm) as client:
+        client.set_current_context(
+            {"product_name": "測試飲品", "ingredients": ["牛奶", "雞蛋"]},
+            {"allergens": {"result": {"summary": "需要確認"}}},
+        )
+        responses = [await client.ask(question) for question in questions]
+
+    assert any(response.sources for response in responses)
+    assert any("目前知識庫找不到足夠依據" in response.answer for response in responses)
+    assert all("重點引用：" not in response.answer for response in responses)
+    assert any(
+        any("測試飲品" in str(message.get("content", "")) for message in request)
+        for request in fake_llm.chat.completions.requests
+    )

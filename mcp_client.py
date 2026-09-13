@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -20,9 +21,10 @@ from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from openai import AsyncOpenAI
 
+from foodguard.synthesis import NOT_ENOUGH_EVIDENCE, synthesize_evidence
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-NOT_ENOUGH_EVIDENCE = "目前知識庫找不到足夠依據"
 
 SYSTEM_PROMPT = f"""你是 FoodGuard 食品標示法規助理。
 
@@ -30,22 +32,26 @@ SYSTEM_PROMPT = f"""你是 FoodGuard 食品標示法規助理。
 1. 任何食品法規問題，先選擇適當的 MCP tool 取得本機 RAG 證據，再回答。
 2. 只能使用 MCP tool 回傳的 sources 作為法規依據，不得自行補充、猜測或創造法規名稱、門檻、數字。
 3. 若 sources 是空的，必須明確說：{NOT_ENOUGH_EVIDENCE}
-4. 最終回答要保留 document、page 與引用內容；不要刪除或改寫來源引用。
-5. 使用者的追問可能省略主詞。請根據完整 conversation history 理解上下文，再決定 MCP tool 與 query。
-6. 對「食品法有哪些」「食品標示有哪些規定」這類廣泛問題，一律先呼叫 search_food_regulation；只能整理搜尋結果明確呈現的內容。
-7. 如果搜尋結果只涵蓋特定主題，請明確說明目前只能確認那些主題，不要憑記憶列出未出現在來源中的法規。
+4. 工具回傳的 evidence_summary 是整理後依據；不要把 raw chunk、PDF 原文、chunk_id 或相似度分數當成回答。
+5. 使用者的追問可能省略主詞。請根據完整 conversation history 與目前食品資料理解上下文，再決定 MCP tool 與 query。
+6. 對「食品法有哪些」「食品標示有哪些規定」這類廣泛問題，一律先呼叫 search_food_regulation；只能整理搜尋結果明確涵蓋的主題。
+7. 如果搜尋結果只涵蓋特定主題，請說明目前只能確認那些主題，不要憑記憶列出未出現在來源中的規定。
 8. 使用者若詢問與食品無關的問題，請簡短說明本服務只處理食品標示與營養宣稱。
-9. 回答先講結論，再用 3 至 5 點條列重點；不要逐段重複檢索文字，也不要把整份法規全文串進回答。
+9. 回答只輸出自然語言：先講結論，再用 3 至 5 點條列重點；不要逐段重複檢索文字。
+10. Client 會另外呈現來源，回答中不要自行建立「法規來源」段落，也不要貼出原文。
 """
 
 ANALYSIS_SYSTEM_PROMPT = f"""你是 FoodGuard 食品標示分析助手。
 
-你只能依照提供的 PRODUCT_DATA、RULE_RESULTS 與 REGULATION_EVIDENCE 進行判斷。
-REGULATION_EVIDENCE 是證據，不是最終答案。
-你必須先理解食品資料，再用最相關的證據支持結論。
+你只能依照提供的 PRODUCT_DATA、RULE_RESULTS 與 SYNTHESIZED_EVIDENCE 進行判斷。
+SYNTHESIZED_EVIDENCE 是已去重、分級、濃縮的證據，不是可以照抄的原文。
+你必須先理解食品資料，再用最相關的整理後重點支持結論。
 不得捏造不存在的法規、標準、門檻、條號或數字。
 如果證據不足以支持明確判斷，必須明確說：{NOT_ENOUGH_EVIDENCE}。
-回答先講整體結論，再用 3 至 5 點條列重點；不要複製原始檢索段落。
+回答使用台灣繁體中文，先講整體結論，再用 3 至 5 點條列重點；不要複製原始檢索段落。
+保留「可能、建議、需要確認、應」的語氣差異，不要把建議改成強制要求。
+營養標示回答聚焦已提供欄位、缺少欄位與需確認項目；宣稱回答聚焦宣稱與輸入數值是否有證據支持；疾病指引只能說明飲食注意事項，不做診斷。
+不要在回答中顯示 raw chunk、PDF、chunk_id、embedding 或相似度分數；Client 會另外顯示來源。
 """
 
 
@@ -59,6 +65,7 @@ class ClientResponse:
     answer: str
     sources: list[dict[str, Any]]
     tool_calls: list[str]
+    evidence_synthesis: dict[str, Any] | None = None
 
 
 def _load_settings(require_key: bool = True) -> tuple[str, str, str | None]:
@@ -179,27 +186,41 @@ def _fallback_query(history: list[dict[str, Any]], current: str) -> str:
     return "；".join(previous_questions + [current]).strip()
 
 
-def _llm_tool_payload(payload: dict[str, Any], max_text_chars: int = 1800) -> dict[str, Any]:
-    """Keep the model context compact while retaining full sources separately."""
+def _synthesize_payloads(
+    payloads: list[dict[str, Any]],
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Combine MCP evidence before it is placed in an LLM prompt."""
 
-    compact = dict(payload)
-    compact_sources: list[dict[str, Any]] = []
-    for source in payload.get("sources", []):
-        if not isinstance(source, dict):
-            continue
-        item = dict(source)
-        text = str(item.get("text", ""))
-        if len(text) > max_text_chars:
-            item["text"] = text[:max_text_chars] + "…"
-        compact_sources.append(item)
-    compact["sources"] = compact_sources
-    return compact
+    evidence: list[dict[str, Any]] = []
+    for payload in payloads:
+        result = payload.get("result", {})
+        domain = result.get("knowledge_domain") if isinstance(result, dict) else None
+        for source in payload.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            record = dict(source)
+            if domain and not record.get("knowledge_domain"):
+                record["knowledge_domain"] = domain
+            evidence.append(record)
+    return synthesize_evidence(evidence, product_context=product_context)
+
+
+def _llm_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Expose only synthesized evidence to the LLM, keeping raw evidence internal."""
+
+    return {
+        "result": payload.get("result", {}),
+        "evidence_summary": _synthesize_payloads([payload]),
+    }
 
 
 def _answer_with_sources(answer: str, sources: list[dict[str, Any]]) -> str:
-    """Guarantee that the user-visible answer retains the MCP source payload."""
+    """Add compact source citations without exposing raw retrieved chunks."""
 
-    answer = (answer or "").strip()
+    answer = _sanitize_answer(answer, sources)
+    if not answer:
+        answer = NOT_ENOUGH_EVIDENCE
     if not sources:
         if NOT_ENOUGH_EVIDENCE not in answer:
             answer = f"{answer}\n\n{NOT_ENOUGH_EVIDENCE}".strip()
@@ -207,13 +228,20 @@ def _answer_with_sources(answer: str, sources: list[dict[str, Any]]) -> str:
 
     lines = [answer, "", "法規來源："]
     for number, source in enumerate(sources, start=1):
-        source_title = Path(str(source["document"])).stem
-        lines.append(f"{number}. {source_title}，第 {source['page']} 頁")
-        excerpt = " ".join(str(source["text"]).split())
-        if len(excerpt) > 220:
-            excerpt = excerpt[:220].rstrip() + "…"
-        lines.append(f"   重點引用：{excerpt}")
+        source_title = Path(str(source.get("document", "未提供文件名稱"))).stem
+        lines.append(f"{number}. {source_title}，第 {source.get('page', '—')} 頁")
     return "\n".join(lines)
+
+
+def _sanitize_answer(answer: str, sources: list[dict[str, Any]]) -> str:
+    """Prevent an accidental verbatim long-chunk echo in the public answer."""
+
+    cleaned = (answer or "").strip()
+    for source in sources:
+        raw_text = " ".join(str(source.get("text", "")).split())
+        if len(raw_text) >= 80 and raw_text in cleaned:
+            cleaned = cleaned.replace(raw_text, "（依官方資料整理）")
+    return cleaned
 
 
 def _deterministic_analysis_summary(
@@ -253,6 +281,8 @@ class FoodGuardMCPClient:
         self._mcp: Client | None = None
         self._tools: list[Any] = []
         self._llm = llm_client
+        self.current_product: dict[str, Any] | None = None
+        self.current_analysis: dict[str, Any] | None = None
         if self._llm is None and api_key:
             try:
                 timeout = float(os.getenv("OPENAI_TIMEOUT", "20"))
@@ -264,6 +294,40 @@ class FoodGuardMCPClient:
                 timeout=timeout,
                 max_retries=0,
             )
+
+    def set_current_context(
+        self,
+        product_data: dict[str, Any] | None = None,
+        analysis: dict[str, Any] | None = None,
+    ) -> None:
+        """Attach the active product to follow-up questions without raw evidence."""
+
+        self.current_product = copy.deepcopy(product_data) if product_data else None
+        self.current_analysis = copy.deepcopy(analysis) if analysis else None
+
+    def _add_context_message(self) -> None:
+        if not self.current_product and not self.current_analysis:
+            return
+        context = {
+            "product": self.current_product or {},
+            "analysis": {
+                name: payload.get("result", {})
+                for name, payload in (self.current_analysis or {}).items()
+                if isinstance(payload, dict) and name in {"allergens", "nutrition_label", "nutrition_claim"}
+            },
+        }
+        message = {
+            "role": "system",
+            "content": (
+                "目前對話的食品資料與既有判讀結果如下。追問省略主詞時，優先以此脈絡理解；"
+                "若要補充法規，仍須呼叫 MCP tool。\n"
+                + json.dumps(context, ensure_ascii=False)
+            ),
+        }
+        if any(item.get("content") == message["content"] for item in self.history):
+            return
+        insert_at = 1 if self.history and self.history[0].get("role") == "system" else 0
+        self.history.insert(insert_at, message)
 
     async def __aenter__(self) -> "FoodGuardMCPClient":
         parameters = StdioServerParameters(
@@ -318,20 +382,14 @@ class FoodGuardMCPClient:
         if self._llm is None:
             return fallback
 
-        evidence_results = {
-            name: _llm_tool_payload(payload)
-            for name, payload in task_results.items()
-        }
+        evidence_summary = _synthesize_payloads(list(task_results.values()), product_data)
         prompt_payload = {
             "PRODUCT_DATA": product_data,
             "RULE_RESULTS": {
                 name: payload.get("result", {})
                 for name, payload in task_results.items()
             },
-            "REGULATION_EVIDENCE": {
-                name: payload.get("sources", [])
-                for name, payload in evidence_results.items()
-            },
+            "SYNTHESIZED_EVIDENCE": evidence_summary,
         }
         try:
             completion = await self._llm.chat.completions.create(
@@ -374,12 +432,17 @@ class FoodGuardMCPClient:
             pass
 
         if sources:
-            answer = "目前知識庫找到以下與問題相關的重點，請以引用內容為準。"
+            answer = "目前知識庫找到與問題相關的官方資料，已整理成重點；請展開來源查看依據。"
         else:
             answer = NOT_ENOUGH_EVIDENCE
         answer = _answer_with_sources(answer, sources)
         self.history.append({"role": "assistant", "content": answer})
-        return ClientResponse(answer=answer, sources=sources, tool_calls=called_tools)
+        return ClientResponse(
+            answer=answer,
+            sources=sources,
+            tool_calls=called_tools,
+            evidence_synthesis=synthesize_evidence(sources),
+        )
 
     async def _safe_analysis_tool(
         self, name: str, arguments: dict[str, Any]
@@ -425,10 +488,12 @@ class FoodGuardMCPClient:
             ),
         }
         overall_summary = await self.summarize_analysis(product_data, task_results)
+        evidence_synthesis = _synthesize_payloads(list(task_results.values()), product_data)
         return {
             "product_data": product_data,
             **task_results,
             "overall_summary": overall_summary,
+            "evidence_synthesis": evidence_synthesis,
             "tool_calls": [
                 "check_allergens",
                 "check_nutrition_label",
@@ -442,6 +507,7 @@ class FoodGuardMCPClient:
         if not user_message.strip():
             raise ValueError("user_message must not be empty")
 
+        self._add_context_message()
         if self._llm is None:
             return await self._ask_without_llm(user_message)
 
@@ -478,7 +544,7 @@ class FoodGuardMCPClient:
                     except Exception:
                         pass
                 fallback_text = (
-                    "已找到可供核對的食品法規依據，以下列出來源；詳細解讀請以來源原文為準。"
+                    "目前無法使用語言模型；已保留可供核對的官方資料來源，請展開來源查看。"
                     if sources
                     else NOT_ENOUGH_EVIDENCE
                 )
@@ -487,6 +553,7 @@ class FoodGuardMCPClient:
                     answer=_answer_with_sources(fallback_text, sources),
                     sources=sources,
                     tool_calls=called_tools,
+                    evidence_synthesis=synthesize_evidence(sources),
                 )
             message = completion.choices[0].message
             tool_calls = getattr(message, "tool_calls", None) or []
@@ -542,6 +609,7 @@ class FoodGuardMCPClient:
                     answer=_answer_with_sources(assistant_text, sources),
                     sources=sources,
                     tool_calls=called_tools,
+                    evidence_synthesis=synthesize_evidence(sources),
                 )
 
             self.history.append(_message_to_dict(message))

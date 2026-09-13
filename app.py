@@ -79,10 +79,14 @@ async def _run_analysis(product_data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _run_chat(
-    question: str, history: list[dict[str, Any]]
+    question: str,
+    history: list[dict[str, Any]],
+    current_product: dict[str, Any] | None = None,
+    analysis: dict[str, Any] | None = None,
 ) -> tuple[ClientResponse, list[dict[str, Any]]]:
     async with FoodGuardMCPClient(require_api_key=False) as client:
         client.history = copy.deepcopy(history)
+        client.set_current_context(current_product, analysis)
         response = await client.ask(question)
         return response, client.conversation_history
 
@@ -304,10 +308,9 @@ def _render_sources(
             return
         for index, source in enumerate(sources[:max_sources], start=1):
             st.markdown(f"**{index:02d} · {_source_title(source.get('document', '未提供文件名稱'))}**")
-            st.caption(
-                f"第 {source.get('page', '—')} 頁　|　相關度 {float(source.get('score', 0.0)):.4f}"
-            )
-            st.markdown(f"**相關內容：** {_source_excerpt(source.get('text', ''))}")
+            st.caption(f"第 {source.get('page', '—')} 頁")
+            excerpt = source.get("relevant_excerpt", source.get("text", ""))
+            st.markdown(f"**相關內容：** {_source_excerpt(excerpt)}")
             if index < min(len(sources), max_sources):
                 st.divider()
 
@@ -316,6 +319,7 @@ def _render_debug(
     payloads: dict[str, dict[str, Any]], tool_calls: list[str] | None = None
 ) -> None:
     with st.expander("開發者資訊", expanded=False):
+        st.caption("此區僅供開發除錯；原始 chunk、檢索分數與 MCP 回應不會顯示在一般回答中。")
         if tool_calls:
             st.markdown("**MCP 工具呼叫**")
             st.write(" → ".join(tool_calls))
@@ -514,7 +518,14 @@ def _render_chat_section() -> None:
             with st.spinner("正在整理回答…"):
                 try:
                     response, history = _run_async(
-                        _run_chat(question, st.session_state.chat_history)
+                        _run_chat(
+                            question,
+                            st.session_state.chat_history,
+                            current_product=(
+                                st.session_state.analysis or {}
+                            ).get("product_data"),
+                            analysis=st.session_state.analysis,
+                        )
                     )
                     st.session_state.chat_history = history
                     st.markdown(response.answer)

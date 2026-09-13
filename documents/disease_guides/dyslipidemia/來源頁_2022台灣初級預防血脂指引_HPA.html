@@ -1,0 +1,915 @@
+
+
+
+
+<!DOCTYPE html>
+
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head><meta charset="utf-8" /><meta http-equiv="X-UA-Compatible" content="IE=edge" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="description" content="Health Promotion Administration (HPA) - 2022 年台灣初級預防血脂指引" /><link rel="icon" href="/NewPageStyle/EN/images/favicon.ico" type="image/x-icon" /><title>
+	Health Promotion Administration (HPA) - 2022 年台灣初級預防血脂指引
+</title>
+    <!--共用css-->
+    <link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/normalize.css?ver=20221130" /><link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/layout.css?ver=20221130" /><link rel="stylesheet" media="screen" href="/NewPageStyle/EN/css/flexslider.min.css?ver=20221130" /><link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/slick.min.css?ver=20221130" />
+    <!--slick slider的css-->
+    <!--內頁用css-->
+    <link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/inner.css?ver=20221130" /><link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/surveyStyle.css?ver=20221130" />
+    <!--問卷調查的css-->
+    <link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/sidebar-menu.css?ver=20221130" />
+    <!--左選單的css-->
+    <!--舊版特殊內頁版型-->
+    <link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/contentOrig.css?ver=20221130" /><link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/simple-grid.css?ver=20221130" />
+    <!--電腦主選單的css/js-->
+    <link rel="stylesheet" href="/NewPageStyle/EN/css/megafish.min.css?ver=20221130" media="screen" />
+    <script src="/NewPageStyle/EN/js/jquery.js" type="text/javascript"></script>
+    <script src="/NewPageStyle/EN/js/hoverIntent.min.js" type="text/javascript"></script>
+    <script src="/NewPageStyle/EN/js/superfish.min.js" type="text/javascript"></script>
+    <script src="/NewPageStyle/EN/js/jquery.cookie.min.js" type="text/javascript"></script>
+    <!--End 電腦主選單的css/js-->
+
+    
+
+    <!--手機主選單的js20250214-->
+    <link rel="stylesheet" type="text/css" href="/NewPageStyle/EN/css/mmenuNew20250214.css" />
+    <!-- End 手機主選單的js20250214-->
+
+    <!--手機主選單的js20250214-->
+    <script src="/NewPageStyle/EN/js/mmenu20250214.js"></script>
+    <!-- End 手機主選單的js20250214-->
+
+    <!--長條圖的css/js-->
+    <link rel="stylesheet" media="screen" href="/NewPageStyle/EN/css/ProgressBars.css?ver=20221130" />
+    <script>
+        $(function () {
+            $(".meter > span").each(function () {
+                $(this)
+                    .data("origWidth", $(this).width())
+                    .width(0)
+                    .animate({
+                        width: $(this).data("origWidth")
+                    }, 1200);
+            });
+        });
+    </script>
+    <!--End 長條圖的css/js-->
+
+    <script async="async">
+        //電腦主選單的js 
+        (function ($) { //create closure so we can safely use $ as alias for jQuery
+            $(document).ready(function () {
+                var exampleOptions = {
+                    speed: 'fast'
+                }
+                // initialise plugin
+                var mainMenu = $('#mainMenu').superfish(exampleOptions);
+
+                // buttons to demonstrate Superfish's public methods
+                $('.destroy').on('click', function () {
+                    mainMenu.superfish('destroy');
+                });
+
+                $('.init').on('click', function () {
+                    mainMenu.superfish(exampleOptions);
+                });
+
+                $('.open').on('click', function () {
+                    mainMenu.children('li:first').superfish('show');
+                });
+
+                $('.close').on('click', function () {
+                    mainMenu.children('li:first').superfish('hide');
+                });
+            });
+
+        })(jQuery);
+
+        ////手機主選單的js 
+        //$(function () {
+        //    $('nav#menu').mmenu({
+        //        extensions: ['effect-slide-menu', 'pageshadow'],
+        //        //searchfield	: true,
+        //        counters: true,
+        //        navbar: {
+        //            title: 'Menu'
+        //        },
+        //        navbars: [
+        //            {
+        //                position: 'top',
+        //                content: ['#rwdSearch']
+        //            },
+        //            {
+        //                position: 'top',
+        //                content: [
+        //                    'prev',
+        //                    'title',
+        //                    'close'
+        //                ]
+        //            }, {
+        //                position: 'bottom',
+        //                //content: [
+        //                //    '<a class="ns-fb" href="https://www.facebook.com/hpagov" title="facebook" target="_blank" rel="noopener noreferrer"><img alt="" src="/NewPageStyle/TW/images/icon/fb.png"></a>',
+        //                //    '<a class="ns-yt" href="https://www.youtube.com/user/hpagov" title="youtube" target="_blank" rel="noopener noreferrer"><img alt="" src="/NewPageStyle/TW/images/icon/yt.png"></a>',
+        //                //    '<a class="ns-line" href="/Pages/Detail.aspx?nodeid=92&pid=' + LineID + '" title="line" target="_blank"><img alt="" src="/NewPageStyle/TW/images/icon/line.png"></a>'
+        //                //]
+        //                content: [
+        //                    '<a class="ns-fb" href="https://www.facebook.com/hpagov" title="Facebook (open new window)" target="_blank" rel="noopener noreferrer"><img alt="facebook" src="/NewPageStyle/TW/images/icon/fb.png"></a>',
+        //                    '<a class="ns-yt" href="https://www.youtube.com/user/hpagov" title="Youtube (open new window)" target="_blank" rel="noopener noreferrer"><img alt="youtube" src="/NewPageStyle/TW/images/icon/yt.png"></a>',
+        //                    '<a class="ns-line" href="/Pages/Detail.aspx?nodeid=92&pid=' + LineID + '" title="Line (open new window)" target="_blank"><img alt="line" src="/NewPageStyle/TW/images/icon/line.png"></a>'
+        //                ]
+        //            }
+        //        ]
+        //    });
+        //});
+
+        //fatfooter收合的js 
+        $(document).ready(function () {
+            $(".arrow-up").hide();
+            $(".slideArrow").click(function () {
+                $(".slideContent").slideToggle(500);
+                $(this).find(".arrow-up, .arrow-down").toggle();
+            });
+        });
+
+        //回上方的js 
+        $(document).ready(function () {
+            $("#topBtn").hide();
+            $(function () {
+                //檢查螢幕高度
+                var height = $(window).height();
+                $(window).scroll(function () {
+                    if ($(window).scrollTop() > 300) {
+                        $("#topBtn").fadeIn();
+                    } else {
+                        $("#topBtn").fadeOut();
+                    }
+                });
+                $('#topBtn').click(function () {
+                    $('html,body').animate({ scrollTop: '0px' }, 600);
+                    return false;
+                });
+            });
+        });
+
+        //header搜尋的js
+        $(document).ready(function () {
+            $(function () {
+                //檢查螢幕高度
+                var height = $(window).height();
+                $(window).scroll(function () {
+                    if ($(window).scrollTop() > 5) {
+                        $(".topSearchWrap").fadeOut(200);
+                    } else {
+                        $(".topSearchWrap").fadeIn();
+                    }
+                });
+            });
+        });
+
+    </script>
+
+    <!--無障礙: a元素若target=_blank, 加上屬性rel='noopener noreferrer'-->
+    <script>
+        $(document).ready(function () {
+            $('a[target="_blank"]').each(function () {
+                var rel = $(this).attr('rel');
+                if ($.trim(rel) != 'noopener noreferrer')
+                    $(this).attr('rel', 'noopener noreferrer');
+            });
+        });
+    </script>
+    <!--End 無障礙: a元素若target=_blank, 加上屬性rel='noopener noreferrer'-->
+
+    
+</head>
+
+<body class="resizeWrap innerPage layout-green">
+
+    <script type="text/javascript">     
+        var LineID ='11208';
+        switch ($.cookie('pageColor')) {
+            case '.blue':
+                $("body").removeClass("layout-green");
+                $("body").addClass("layout-blue");
+                break;
+            case '.green':
+                $("body").removeClass("layout-blue");
+                $("body").addClass("layout-green");
+                break;
+            case '.pink':
+                $("body").removeClass("layout-blue");
+                $("body").removeClass("layout-green");
+                break;
+        }
+    </script>
+
+
+    <div>
+        <form name="aspnetForm" method="post" action="./Detail.aspx?nodeid=644&amp;pid=16969" id="aspnetForm">
+<div>
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="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" />
+</div>
+
+<div>
+
+	<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="82CEFB55" />
+	<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="NUNJ9Lf53vFe8xN5CyPu6XxUaDukRvKSvEBQn/mqvnl4/1iXXqQh1pfLjEhj1Jsw/E1q25m7uQQOQWcUyGk850Veor0UWReRtt2VluXVy9TUpR5sN09dr3eDB0Z3jUh2IVv5xtkE/BxehrpauhzWPxd8qzgtOhimy9vKav39f5k=" />
+</div>
+            <a href="#main-content" id="gotocenter" title="The main content area" tabindex="1">The main content area</a>
+            <noscript>Your browser does not support JavaScript. If the webpage function does not work properly, please open the browser JavaScript status.</noscript>
+
+            <header>
+                
+<div class="webWrap topheader">
+    <button type="button" class="sidebarCtrl" aria-label="開啟側欄">開啟側欄</button>
+    
+    <h1 class="logo"><a href="/EngPages/Index.aspx" title="Health Promotion Administration">
+        <img src="/NewPageStyle/EN/images/logo/logo.svg" alt="Health Promotion Administration" /></a></h1>
+    <a class="MBonly langBtn" href="/Home/Index.aspx" title="中文">中文</a>
+    <nav class="topNav">
+        <ul>
+            <li><a id="top" title="Top block (Alt+U)" accesskey="U" href="#top">:::</a></li>
+            <li><a href="/SiteMap/SiteMap_Eng.aspx" title="Sitemap">Sitemap</a></li>
+            <li><a href="/EngPages/Index.aspx" title="Home">Home</a></li>
+            <li>
+                <a href="/EngPages/List.aspx?nodeid=4250" title ="Contact Us">Contact Us</a>
+            </li>
+            <li><a href="/Home/Index.aspx" title="中文">中文</a></li>
+            <li class="resizeBox">
+                <a href="javascript:void(0);" title="Font Size">
+                    <img alt="" src="/NewPageStyle/EN/images/icon/navIcon-fontSize.png"><span class="sr-only">Font Size</span></a>
+                <div class="fontSizeControl resizer">
+                    <button class="sm" onclick="javascript:return false;">S</button>
+                    <button class="md" onclick="javascript:return false;">M</button>
+                    <button class="lg" onclick="javascript:return false;">L</button>
+                </div>
+            </li>
+            <li class="colorBox">
+                <a href="javascript:void(0);" title="layout Color">
+                    <img alt="" src="/NewPageStyle/EN/images/icon/navIcon-color.png"><span class="sr-only">layout Color</span></a>
+                <div class="colorControl">
+                    <button class="green" onclick="javascript:return false;">Green</button>
+                    <button class="blue" onclick="javascript:return false;">Blue</button>
+                    <button class="pink" onclick="javascript:return false;">Pink</button>
+                </div>
+            </li>
+            <li class="navSocial ns-fb"><a href="https://www.facebook.com/hpagov" title="fb fanpage (open new window)" target="_blank" rel="noopener noreferrer">
+                <img alt="fb fanpage (open new window)" src="/NewPageStyle/EN/images/icon/fb.png"></a></li>
+            <li class="navSocial ns-ytb"><a href="https://www.youtube.com/user/hpagov" title="youtube (open new window)" target="_blank" rel="noopener noreferrer">
+                <img alt="youtube (open new window)" src="/NewPageStyle/EN/images/icon/yt.png"></a></li>
+            <li class="navSocial ns-line">
+                
+<a href="/Pages/Detail.aspx?nodeid=92&pid=11208" title="line (open new window)" target="_blank">
+    <img alt="line (open new window)" src="/NewPageStyle/EN/images/icon/line.png">
+</a>
+            </li>
+        </ul>
+    </nav>
+</div>
+
+                
+
+<!--手機板選單-->
+
+
+<!--手機版 2025-->
+<aside class="sidebar" style="display: none;">
+
+    <!--搜尋功能-->
+    <div id="rwdSearch">
+        <label for="topSearch" style="display: none;"><i class="fa fa-search" aria-hidden="false"></i>Search</label>
+        <input id="topSearch" placeholder="Keyword" type="text">
+        <input class="searchBtn" name="" type="button" value="Search" onclick="GetMoSelect()" title="Search">
+        <script type="text/javascript">
+            function GetMoSelect() {
+                var thisKey = ($('#topSearch').val() != '') ? '?queryString=' + $('#topSearch').val() : '';
+                window.location.href = '/Search/GoogleSearch.aspx' + thisKey;
+            }
+        </script>
+    </div>
+    <!--End 搜尋功能-->
+
+    <!--選單-->
+    <nav class="menu">
+        <ul>
+            
+<li><a title="About HPA" href="/EngPages/List.aspx?nodeid=1039" >About HPA</a></li>
+
+
+<li><a title="News" href="/EngPages/List.aspx?nodeid=1040" >News</a></li>
+
+
+<li><a title="Announcements" href="/EngPages/List.aspx?nodeid=1038" >Announcements</a></li>
+
+
+<li><a title="Topics" href="/EngPages/List.aspx?nodeid=1044" >Topics</a></li>
+
+
+<li><a title="Publications" href="/EngPages/List.aspx?nodeid=1043" >Publications</a></li>
+
+
+<li><a title="Research & Statistic" href="/EngPages/List.aspx?nodeid=1042" >Research & Statistic</a></li>
+
+
+<li><a title="Laws & Regulations" href="/EngPages/List.aspx?nodeid=1041" >Laws & Regulations</a></li>
+
+
+<li><a title="Services" href="/EngPages/List.aspx?nodeid=3954" >Services</a></li>
+
+
+        </ul>
+    </nav>
+    <!--End 選單-->
+
+    <!--導覽-->
+    <nav class="headNav">
+        <ul>
+            <li class="navItem"><a href="/SiteMap/SiteMap_Eng.aspx" title="Sitemap">Sitemap</a></li>
+            <li class="navItem"><a href="/EngPages/Index.aspx" title="Home">Home</a></li>
+            <li class="navItem"><a href="/EngPages/List.aspx?nodeid=4250" title="Contact Us">Contact Us</a></li>
+            
+        </ul>
+    </nav>
+    <!--End 導覽-->
+
+    <!--社群-->
+    <div class="fotterNav">
+        <div class="fotterNav_box">
+            <a class="ns-fb" href="https://www.facebook.com/hpagov" title="Facebook (Open new window)" target="_blank" rel="noopener noreferrer">
+                <img alt="facebook" src="/NewPageStyle/TW/images/icon/fb.png">
+            </a>
+            <a class="ns-yt" href="https://www.youtube.com/user/hpagov" title="Youtube (Open new window)" target="_blank" rel="noopener noreferrer">
+                <img alt="youtube" src="/NewPageStyle/TW/images/icon/yt.png">
+            </a>
+            <a class="ns-line" href="/Pages/Detail.aspx?nodeid=92&amp;pid=11208" title="Line (Open new window)" target="_blank" rel="noopener noreferrer">
+                <img alt="line" src="/NewPageStyle/TW/images/icon/line.png">
+            </a>
+        </div>
+    </div>
+    <!--End 社群-->
+
+</aside>
+<!--end 2025-->
+
+
+<ul class="sf-menu" id="mainMenu">
+    
+<li><a title="About HPA" href="/EngPages/List.aspx?nodeid=1039" >About HPA</a></li>
+
+
+<li><a title="News" href="/EngPages/List.aspx?nodeid=1040" >News</a></li>
+
+
+<li><a title="Announcements" href="/EngPages/List.aspx?nodeid=1038" >Announcements</a></li>
+
+
+<li><a title="Topics" href="/EngPages/List.aspx?nodeid=1044" >Topics</a></li>
+
+
+<li><a title="Publications" href="/EngPages/List.aspx?nodeid=1043" >Publications</a></li>
+
+
+<li><a title="Research & Statistic" href="/EngPages/List.aspx?nodeid=1042" >Research & Statistic</a></li>
+
+
+<li><a title="Laws & Regulations" href="/EngPages/List.aspx?nodeid=1041" >Laws & Regulations</a></li>
+
+
+<li><a title="Services" href="/EngPages/List.aspx?nodeid=3954" >Services</a></li>
+
+
+</ul>
+
+
+                
+
+<div class="topSearchWrap">
+    <div class="contentWrap">
+        <div class="searchWrap topSearch">
+            <label for="ctl00_SearchBox_EN_Box_SearchKey">Search</label>
+            <input name="ctl00$SearchBox_EN_Box$SearchKey" type="text" id="ctl00_SearchBox_EN_Box_SearchKey" class="tsInputBox" placeholder="Keyword" />
+            <input type="submit" name="ctl00$SearchBox_EN_Box$SearchButton" value="Search" id="ctl00_SearchBox_EN_Box_SearchButton" class="searchBtn" title="Search" />
+        </div>
+    </div>
+    <script type="text/javascript">
+        document.onkeydown = function () {
+            if (window.event) {
+                if (event.keyCode == 13) {
+                    if (event.srcElement.nodeName == 'A') {
+                    }
+                    else {
+                        if (event.srcElement.nodeName != "TEXTAREA" && event.srcElement.type != "submit") {
+                            switch (event.srcElement.id) {
+                                case 'ctl00_SearchBox_EN_Box_SearchKey':
+                                    $('#ctl00_SearchBox_EN_Box_SearchButton').click();
+                                    break;
+                                case 'upload':
+                                    $('#upload').click();
+                                    break;
+                                case 'refreshCaptcha':
+                                    $('#refreshCaptcha').click();
+                                    break;
+                                case 'btnSendCode':
+                                    $('#btnSendCode').click();
+                                    break;
+                                case 'SendVCodeEmail':
+                                    $('#SendVCodeEmail').click();
+                                    break;
+                                case 'reset':
+                                    $('#reset').click();
+                                    break;
+                                default:
+                                    event.keyCode = 9;
+                                    break;
+                            }
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</div>
+
+            </header>
+            <div class="mainWrap innerWrap">
+                
+
+    <div class="leftMenu" id="contentLeft">                    
+                  <noscript>Your browser does not support JavaScript,Please use the Subject into subject.</noscript><div class="LM-top">
+                                      <a id="left" title="Left block (Alt+L)" accesskey="L" href="#contentLeft" class="sgAccesskey">:::</a>
+<h2 class="leftTitle"><a href="/EngPages/List.aspx?nodeid=361" title="高血脂">高血脂</a></h2>
+</div>
+<section>
+                                    <ul class="sidebar-menu">
+<li><a href="/EngPages/List.aspx?nodeid=361" title="高血脂"><span>高血脂</span></a></li>
+</ul>
+                                        </section>
+
+
+                  <script src="/NewPageStyle/EN/js/sidebar-menu.js"></script>
+                  <script>
+                      $.sidebarMenu($('.sidebar-menu'));
+                  </script>      
+                </div>
+
+
+                <div class="ContentWrap">
+                
+    
+
+<div class="contentTop">
+    <a class="anchor-fix" id="main-content" title="anchor Content block (Alt+C)" accesskey="C" href="#main-content">anchor</a>
+    
+
+<div class="path">
+    
+    <a id="content" title="Content block(Alt + C)" accesskey="C" href="javascript:; ">:::</a><a href="/EngPages/Index.aspx" title="to Home" ><img class="svg icon" alt="Back to HomePage" src="/NewPageStyle/EN/images/icon/home.svg"/>Home</a> &gt;<a href="javascript:void(0);" ><i class="active" aria-hidden="true"></i>健康主題</a> &gt;<a href="/EngPages/List.aspx?nodeid=30" ><i class="active" aria-hidden="true"></i>疾病防治</a> &gt;<a href="/EngPages/List.aspx?nodeid=46" ><i class="active" aria-hidden="true"></i>慢性病防治</a> &gt;<a href="/EngPages/List.aspx?nodeid=223" ><i class="active" aria-hidden="true"></i>三高防治專區(高血壓、高血脂、糖尿病)</a> &gt;<a href="/EngPages/List.aspx?nodeid=361" ><i class="active" aria-hidden="true"></i>高血脂</a>
+    
+</div>
+    <div class="RLbox">
+        <h3 class="pageTitle">2022 年台灣初級預防血脂指引</h3>
+
+        
+<ul class="innerSocialList">
+    <li><a class="ISL-facebook" href="http://www.facebook.com/sharer.php?u=https%3a%2f%2fwww.hpa.gov.tw%2f%2fEngPages%2fDetail.aspx%3fnodeid%3d644%26pid%3d16969" target="_blank" title="Facebook(Open in a new window)" rel="noopener noreferrer">Facebook</a></li>
+    <li><a class="ISL-line" href="https://lineit.line.me/share/ui?url=https%3a%2f%2fwww.hpa.gov.tw%2f%2fEngPages%2fDetail.aspx%3fnodeid%3d644%26pid%3d16969" target="_blank" title="Line(Open in a new window)" rel="noopener noreferrer">Line</a></li>
+    <li><a class="ISL-twitter" href="https://twitter.com/share?url=https%3a%2f%2fwww.hpa.gov.tw%2f%2fEngPages%2fDetail.aspx%3fnodeid%3d644%26pid%3d16969" target="_blank" title="Twitter(Open in a new window)" rel="noopener noreferrer">Twitter</a></li>
+    <li><a class="ISL-plurk" href="http://www.plurk.com/?qualifier=shares&amp;status=https%3a%2f%2fwww.hpa.gov.tw%2f%2fEngPages%2fDetail.aspx%3fnodeid%3d644%26pid%3d16969" target="_blank" title="Plurk(Open in a new window)" rel="noopener noreferrer">Plurk</a></li>
+    <li><a class="ISL-send" href="mailto:?subject= Health Promotion Administration&amp;body=https%3a%2f%2fwww.hpa.gov.tw%2f%2fEngPages%2fDetail.aspx%3fnodeid%3d644%26pid%3d16969" title="Email">Email</a></li>
+    <li><a class="ISL-print" href="javascript:void(0);" title="Print">Print</a></li>
+    <li><a class="icon-ShtURL" href="javascript:GetShortUrl();" title="ShortUrl">ShortUrl</a></li>    
+</ul>
+
+
+<script type="text/javascript">
+    $(function () {
+        $('.ISL-print').click(function () {
+            printpage();
+        });
+    });
+    function printpage() {
+        var $copyhtml = $("html").clone();
+        var setTitle = $copyhtml.find('head').find('title');
+        var $copycss = $copyhtml.find('head').find('link');
+        var styles = $copyhtml.find('head').html().match(/<style.*?>[\s\S]*?<\/style>/ig);
+        $copyhtml.find('head').empty().append($copycss).append(styles).append(setTitle);
+        $copyhtml.find('script').remove();
+                    
+        //var thisHtml = '<div class="ContentWrap">';
+        var thisHtml = '<div class="contentTop">';
+        thisHtml += '<div class="path">' + $copyhtml.find(".path").html() + '</div>';
+        thisHtml += '<div class="RLbox">' + $copyhtml.find(".RLbox").html() + '</div>';
+        if ($copyhtml.find(".teamTag").html() != undefined) {
+            thisHtml += '<p class="teamTag">' + $copyhtml.find(".teamTag").html() + '</p>';
+        }
+        if ($copyhtml.find(".pageInfo").html() != undefined) {
+            thisHtml += '<ul class="pageInfo">' + $copyhtml.find(".pageInfo").html() + '</ul>';
+        }
+        thisHtml += '</div>';
+        
+        if ($copyhtml.find(".typeTag").html() != undefined) {
+            thisHtml += '<ul class="typeTag">' + $copyhtml.find(".typeTag").html() + '</ul>';
+        }
+
+        if ($copyhtml.find(".EBlist").html() != undefined) {
+            thisHtml += '<section class="EBlist">' + $copyhtml.find(".EBlist").html() + '</section>';
+        }
+
+        if ($copyhtml.find(".contentBlock").html() != undefined) {
+            thisHtml += '<div class="contentBlock">' + $copyhtml.find(".contentBlock").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".RLintro").html() != undefined) {
+            thisHtml += '<div class="RLintro">' + $copyhtml.find(".RLintro").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".surveyWrap").html() != undefined) {
+            thisHtml += '<div class="surveyWrap">' + $copyhtml.find(".surveyWrap").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".listWrap").html() != undefined) {
+            thisHtml += '<div class="listWrap">' + $copyhtml.find(".listWrap").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".RV-wrap").html() != undefined) {
+            thisHtml += '<div class="RV-wrap">' + $copyhtml.find(".RV-wrap").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".videoList").html() != undefined) {
+            thisHtml += '<div class="videoList">' + $copyhtml.find(".videoList").html() + '</div>';
+        }
+
+        if ($copyhtml.find(".page").html() != undefined) {
+            thisHtml += '<div class="page">' + $copyhtml.find(".page").html() + '</div>';
+        }
+
+        var thisReg = new RegExp("width: 100%; height: auto;", "g");
+        thisHtml = thisHtml.replace(thisReg, '');
+        thisHtml = thisHtml.replace('class="innerSocialList"', 'class="innerSocialList" style="display:none;"');
+        $copyhtml.find('body').html(thisHtml);
+
+        $copyhtml.find('body').append(
+            '<script>'
+            + 'if(!window.location.hash && navigator.userAgent.match("MSIE")) {'
+            + 'window.location = window.location + \'#loaded\';window.location.reload(); } '
+            + 'else { window.print(); setTimeout("window.close();",500); } '
+            + '<\/script>'
+        );
+        var printPage = window.open("", "printPage");
+        printPage.document.open();
+        printPage.document.write("<html><head>");
+        printPage.document.write($copyhtml.find('head').html());
+        printPage.document.write("</head><body>");
+        printPage.document.write($copyhtml.find('body').html());
+        printPage.document.close("</body></HTML>");
+        return false;
+    }
+
+</script>
+       
+<input type="hidden" name="ctl00$ContentPlaceHolder_Main$ctl00$Share_EN1$ShortUrlValue" id="ctl00_ContentPlaceHolder_Main_ctl00_Share_EN1_ShortUrlValue" value="https://www.hpa.gov.tw/644/16969/e" />
+
+    
+<script src="/NewPageStyle/TW/js/layer/layer.js"></script>
+
+<style>
+  .layui-layer-btn0{
+    border-color: #999 !important;
+    background-color: #666 !important;
+    color: #fff !important;
+  }
+
+  .layui-layer.layui-layer-dialog{
+      width:500px !important;
+  }
+</style>
+
+<script>
+    function GetShortUrl(shortUrl) {
+        var thisValue = '<div id="ShortUrlCode">' + $('#ctl00_ContentPlaceHolder_Main_ctl00_Share_EN1_ShortUrlValue').val() + '</div><div id="CopyUrlMsg" style="display:none;">The short URL has been copied!!</div>';
+        layer.confirm(thisValue, {
+            btn: ['Close', 'Copy'], //按钮
+            title: 'Get short URL',
+
+        }, function (index, layero) {
+            layer.close(index);
+        }, function (index) {
+            CopyUrl();
+            return false;
+        });
+    }
+
+    function CopyUrl() {
+        var el = document.getElementById('ShortUrlCode');
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        $('#CopyUrlMsg').show();
+        return false;
+    }
+</script>
+
+
+    </div>
+    <ul class="pageInfo">
+
+<li><img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/eye.svg"/><span class="sr-only">Views：</span>Views：0</li>
+<li>
+                                        <img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/pen.svg"/><span class="sr-only">Last updated：</span>Last updated：2023/05/05</li>
+<li>
+                                        <img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/clock.svg"/><span class="sr-only">Publish date：</span>Publish date：2023/05/05</li>
+</ul>
+
+</div>
+
+<div class="contentBlock">
+    <div class="htmlBlock">
+        
+        
+        
+        
+        
+    </div>
+    
+</div>
+
+
+
+                <ul id="ctl00_ui1" class="innerBottom">
+                    <li><a href="javascript:history.back()" title="Back to previous page">
+                        <img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/left-chevron.svg" />
+                        back</a></li>
+                    <li><a href="/EngPages/Index.aspx" title="Back to HomePage">
+                        <img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/home.svg" />
+                        home</a></li>
+                </ul>
+                </div>
+            </div>
+
+            <footer>
+                <a class="bottomAccesskey" id="bottom" title="Bottom block (Alt+B)" accesskey="B" href="#bottom">:::</a>
+
+                
+<div class="fatfooter">
+    <div class="webWrap">
+        <div class="slideArrow">
+            <a class="arrow-down" title="close" href="#" onclick="return false;">
+                <div><img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/up-chevron.svg"/>close</div>
+            </a>
+            <a class="arrow-up" title="open" href="#" onclick="return false;">
+                <div><img class="svg icon" alt="" src="/NewPageStyle/EN/images/icon/down-chevron.svg"/>open</div>
+            </a>
+        </div>
+        <div class="slideContent">
+            <div class="f-sitemap"><a class="Big" title="About HPA" href="/EngPages/List.aspx?nodeid=1039" >About HPA</a></div>
+<div class="f-sitemap"><a class="Big" title="News" href="/EngPages/List.aspx?nodeid=1040" >News</a></div>
+<div class="f-sitemap"><a class="Big" title="Announcements" href="/EngPages/List.aspx?nodeid=1038" >Announcements</a></div>
+<div class="f-sitemap"><a class="Big" title="Topics" href="/EngPages/List.aspx?nodeid=1044" >Topics</a></div>
+<div class="f-sitemap"><a class="Big" title="Publications" href="/EngPages/List.aspx?nodeid=1043" >Publications</a></div>
+<div class="f-sitemap"><a class="Big" title="Research & Statistic" href="/EngPages/List.aspx?nodeid=1042" >Research & Statistic</a></div>
+<div class="f-sitemap"><a class="Big" title="Laws & Regulations" href="/EngPages/List.aspx?nodeid=1041" >Laws & Regulations</a></div>
+<div class="f-sitemap"><a class="Big" title="Services" href="/EngPages/List.aspx?nodeid=3954" >Services</a></div>
+
+            <div class="f-sitemap" style="display:none;"><a class="Big" title="Contact Us" href="/EngPages/EngOpinionMailbox.aspx" >Contact Us</a></div>
+            <div class="f-sitemap" style="display:none;"><a class="Big" title="FAQs" href="/Pages/List.aspx?nodeid=80" >FAQs</a></div>
+        </div>
+    </div>
+</div>
+
+                
+<div class="footerBot webWrap">
+    <ul class="footerLinks">
+        <li><a href="/EngPages/Detail.aspx?nodeid=1573&pid=8871" title="Privacy Policy">Privacy Policy</a></li>
+        <li><a href="/EngPages/Detail.aspx?nodeid=1573&pid=8872" title="Information Security Policy">Information Security Policy</a></li>
+        <li><a href="/EngPages/Detail.aspx?nodeid=1573&pid=8873" title="Open Government Declaration ">Open Government Declaration </a></li>
+        <li><a href="/EngPages/Bilingual.aspx?Nodeid=4411" title="Bilingual Glossary">Bilingual Glossary</a></li>
+        <li><a href="/SiteMap/SiteMap_Eng.aspx" title="Site Map">Site Map</a></li>
+    </ul>
+    <div class="footInfoBox">
+        <div class="footInfo">
+
+            <ul class="footSocial MBonly">
+                <li class="navSocial ns-fb"><a href="https://www.facebook.com/hpagov" title="fb fanpage" target="_blank" rel="noopener noreferrer"><img alt="fb fanpage(open a new window)" src="/NewPageStyle/EN/images/icon/fb.png"></a></li>
+                <li class="navSocial ns-ytb"><a href="https://www.youtube.com/user/hpagov" title="youtube" target="_blank" rel="noopener noreferrer"><img alt="youtube(open a new window)" src="/NewPageStyle/EN/images/icon/yt.png"></a></li>
+                <li class="navSocial ns-line"><a href="/Pages/Detail.aspx?nodeid=92&pid=11208" title="line" target="_blank"><img alt="line (open new window)" src="/NewPageStyle/EN/images/icon/line.png"></a></li>
+            </ul>
+
+            <div class="infoDetail">
+                <p class="ifd-title">Taipei Office</p>
+                <p class="ifd-tel">886-2-25220888</p>
+                <p class="ifd-add">No.36, Tacheng St., Datong Dist., Taipei City 103205, Taiwan (R.O.C.)</p>
+            </div>
+            <div class="infoDetail">
+                <p class="ifd-title">Taichung Office</p>
+                <p class="ifd-tel">886-4-22172200</p>
+                <p class="ifd-add">6F., No.95, Mincyuan Rd., West District, Taichung City 403305, Taiwan (R.O.C.)</p>
+            </div>
+        </div>
+        <div class="emblem">            
+            <a class="chiefMail" href="/EngPages/List.aspx?nodeid=4250" title ="Contact Us">Contact Us</a>
+
+           
+             
+				<a class="aLink" href="https://accessibility.moda.gov.tw/Applications/Detail?category=20241115143227" target="_blank" title="Web Priority AA Accessibility Approval(open a new window)" rel="noopener noreferrer">
+                <img src="/NewPageStyle/EN/images/aa.png" alt="Web Priority AA Accessibility Approval"></a>
+            <a class="egovLink" href="http://www.gov.tw/" target="_blank" title="my Egov(open a new window)" rel="noopener noreferrer">
+                <img src="/NewPageStyle/EN/images/icon_egov.png" alt="my Egov"></a>
+            <div class="qrWrap">
+                <img alt="Health Promotion Administration (HPA) QR Code" src="/NewPageStyle/EN/images/qr1.png">QRcode</div>
+        </div>
+    </div>
+</div>
+<div class="CRbox">
+    <div class="webWrap">
+        <p class="alignL txtL">This website is funded by government general budget of Health Promotion Administration.</p>
+        <p class="alignR txtR">Update : 2026/09/12</p>
+    </div>
+</div>
+
+
+<!--版型顏色切換demo-->
+<script>
+    $(document).ready(function () {
+        $(".colorControl .pink").click(function () {
+            $("body").removeClass("layout-blue");
+            $("body").removeClass("layout-green");
+        });
+        $(".colorControl .blue").click(function () {
+            $("body").removeClass("layout-green");
+            $("body").addClass("layout-blue");
+        });
+        $(".colorControl .green").click(function () {
+            $("body").removeClass("layout-blue");
+            $("body").addClass("layout-green");
+        });
+    });
+</script>
+
+<!--字級大小的js-->
+<script src="/NewPageStyle/EN/js/jquery.resizer.min.js" type="text/javascript"></script>
+<!--slick slider的js-->
+<script src="/NewPageStyle/EN/js/slick.min.js" type="text/javascript"></script>
+
+<script async>
+        <!--字級大小的js-->
+    $(".resizeWrap").resizable();
+	
+	        <!--滑鼠移過展開-->
+        $('.resizeBox a').mouseover(function () {
+            $('.fontSizeControl').show();
+        });
+    $('.resizeBox').mouseleave(function () {
+        $('.fontSizeControl').hide();
+    });
+	        <!--tab展開-->
+        $('.resizeBox a').focus(function () {
+            $('.fontSizeControl').show();
+        });
+    $('.resizeBox .lg').focusout(function () {
+        $('.fontSizeControl').hide();
+    });	
+	
+        <!--網站色系的js-->
+	        <!--滑鼠移過展開-->
+        $('.colorBox a').mouseover(function () {
+            $('.colorControl').show();
+        });
+    $('.colorBox').mouseleave(function () {
+        $('.colorControl').hide();
+    });
+	
+    <!--tab展開-->
+	$('.colorBox a').focus(function() {
+	    $('.colorControl').show();
+	});
+    $('.colorBox .pink').focusout(function() {
+        $('.colorControl').hide();
+    });	
+
+
+</script>
+
+                <div class="goTop">
+                    <a href="#" title="go Top" id="topBtn">
+                        <img alt="Back to top" src="/NewPageStyle/EN/images/icon/up-arrow.svg" /><span class="sr-only">Top</span></a>
+                </div>
+            </footer>
+
+            <!--版型顏色切換demo-->
+            <script>
+                $(document).ready(function () {
+                    $(".colorControl .pink").click(function () {
+                        $("body").removeClass("layout-blue");
+                        $("body").removeClass("layout-green");
+                        $.cookie('pageColor', '.pink', { expires: 7, path: '/' });
+                    });
+                    $(".colorControl .blue").click(function () {
+                        $("body").removeClass("layout-green");
+                        $("body").addClass("layout-blue");
+                        $.cookie('pageColor', '.blue', { expires: 7, path: '/' });
+                    });
+                    $(".colorControl .green").click(function () {
+                        $("body").removeClass("layout-blue");
+                        $("body").addClass("layout-green");
+                        $.cookie('pageColor', '.green', { expires: 7, path: '/' });
+                    });
+                });
+            </script>
+
+            <!--字級大小的js-->
+            <script src="/NewPageStyle/EN/js/jquery.cookie.min.js"></script>
+            <script src="/NewPageStyle/EN/js/jquery.resizer.min.js"></script>
+            <!--slick slider的js-->
+            <script src="/NewPageStyle/EN/js/slick.min.js"></script>
+
+            <script async="async">
+                //字級大小的js-->
+                $(".resizeWrap").resizable();
+                //滑鼠移過展開-->
+                $('.resizeBox a').mouseover(function () {
+                    $('.fontSizeControl').show();
+                });
+                $('.resizeBox').mouseleave(function () {
+                    $('.fontSizeControl').hide();
+                });
+                //tab展開-->
+                $('.resizeBox a').focus(function () {
+                    $('.fontSizeControl').show();
+                });
+                $('.resizeBox .lg').focusout(function () {
+                    $('.fontSizeControl').hide();
+                });
+
+                //網站色系的js %>
+                //滑鼠移過展開 %>
+                $('.colorBox a').mouseover(function () {
+                    $('.colorControl').show();
+                });
+                $('.colorBox').mouseleave(function () {
+                    $('.colorControl').hide();
+                });
+                //tab展開 %>
+                $('.colorBox a').focus(function () {
+                    $('.colorControl').show();
+                });
+                $('.colorBox .pink').focusout(function () {
+                    $('.colorControl').hide();
+                });
+
+                jQuery('img.svg').each(function () {
+                    var $img = jQuery(this);
+                    var imgID = $img.attr('id');
+                    var imgClass = $img.attr('class');
+                    var imgURL = $img.attr('src');
+
+                    jQuery.get(imgURL, function (data) {
+                        // Get the SVG tag, ignore the rest   
+                        var $svg = jQuery(data).find('svg');
+
+                        // Add replaced image's ID to the new SVG   
+                        if (typeof imgID !== 'undefined') {
+                            $svg = $svg.attr('id', imgID);
+                        }
+                        // Add replaced image's classes to the new SVG   
+                        if (typeof imgClass !== 'undefined') {
+                            $svg = $svg.attr('class', imgClass + ' replaced-svg');
+                        }
+
+                        // Remove any invalid XML tags as per http://validator.w3.org   
+                        $svg = $svg.removeAttr('xmlns:a');
+
+                        // Check if the viewport is set, if the viewport is not set the SVG wont't scale.   
+                        if (!$svg.attr('viewBox') && $svg.attr('height') && $svg.attr('width')) {
+                            $svg.attr('viewBox', '0 0 ' + $svg.attr('height') + ' ' + $svg.attr('width'))
+                        }
+
+                        // Replace image with new SVG   
+                        $img.replaceWith($svg);
+
+                    }, 'xml');
+
+                });
+
+            </script>
+
+           
+
+            
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-9XH3KLEX54"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+    gtag('config', 'G-9XH3KLEX54', {
+        cookie_flags: 'SameSite=Lax;Secure'
+    });
+</script>
+
+        
+<script language=javascript>openNewWindow('https://www.tas.org.tw/upload/files/1-s2_0-S0929664622002157-main%20(1).pdf')</script></form>
+    </div>
+</body>
+</html>
