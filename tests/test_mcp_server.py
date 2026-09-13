@@ -1,0 +1,82 @@
+from typing import Any
+
+import mcp_server
+
+
+def test_every_tool_returns_structured_result_and_relevant_sources(monkeypatch) -> None:
+    def fake_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        if "過敏原" in query:
+            source = "食品過敏原標示規定.pdf"
+            text = "食品過敏原標示規定：牛奶、蛋及其製品。"
+        elif "營養標示" in query:
+            source = "包裝食品營養標示應遵行事項.pdf"
+            text = "營養標示應列出熱量 蛋白質 脂肪 飽和脂肪 反式脂肪 碳水化合物 糖 鈉。"
+        elif "營養宣稱" in query:
+            source = "包裝食品營養宣稱應遵行事項.pdf"
+            text = "營養宣稱應符合本規定的相關條件。"
+        else:
+            source = "食品安全衛生管理法_法務部官方重點.md"
+            text = "食品安全衛生管理法食品標示與食品宣傳廣告相關規範。"
+        return [{"source": source, "page": 2, "chunk_id": "x", "text": text, "score": 0.9}]
+
+    monkeypatch.setattr(mcp_server, "rag_search", fake_search)
+    calls = [
+        mcp_server.search_food_regulation("食品法有哪些"),
+        mcp_server.check_allergens("牛奶、雞蛋"),
+        mcp_server.check_nutrition_label({"熱量": "180 kcal"}),
+        mcp_server.check_nutrition_claim("高蛋白", {"蛋白質": "12 g"}),
+    ]
+
+    assert len(calls) == 4
+    for response in calls:
+        assert set(response) >= {"result", "sources"}
+        assert response["result"]["status"] in {
+            "pass",
+            "warning",
+            "fail",
+            "info",
+            "insufficient_evidence",
+        }
+        assert response["sources"]
+        assert response["sources"][0].keys() >= {
+            "document",
+            "page",
+            "text",
+            "quote",
+            "score",
+        }
+
+
+def test_tools_report_missing_knowledge_base(monkeypatch) -> None:
+    def missing_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        raise FileNotFoundError("Vector database not found")
+
+    monkeypatch.setattr(mcp_server, "rag_search", missing_search)
+    responses = [
+        mcp_server.search_food_regulation("食品法"),
+        mcp_server.check_allergens("牛奶"),
+        mcp_server.check_nutrition_label({"熱量": "180 kcal"}),
+        mcp_server.check_nutrition_claim("高蛋白", {"蛋白質": "12 g"}),
+    ]
+
+    assert all(response["sources"] == [] for response in responses)
+    assert all(
+        response["result"]["status"] == "insufficient_evidence"
+        for response in responses
+    )
+    assert all(
+        response["result"]["message"] == mcp_server.NOT_ENOUGH_EVIDENCE
+        for response in responses
+    )
+
+
+def test_empty_claim_is_not_applicable_and_skips_rag(monkeypatch) -> None:
+    def unexpected_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        raise AssertionError("empty claim must not call RAG")
+
+    monkeypatch.setattr(mcp_server, "rag_search", unexpected_search)
+    response = mcp_server.check_nutrition_claim("無", {"蛋白質": "12 g"})
+
+    assert response["sources"] == []
+    assert response["result"]["status"] == "not_applicable"
+    assert response["debug_evidence"]["skipped"] == "claim_not_provided"

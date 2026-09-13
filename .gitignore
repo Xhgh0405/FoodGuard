@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+.env
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python packaging
+*.egg-info/
+.eggs/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
+
+# Local environment files
+.env.local
+
+# Notebook outputs
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Data caches
+.cache/
+.faiss/
+data/vector_store/
+
+# Build outputs
+build/
+dist/
+
+# Local tunnel/downloaded tools
+tools/
+
+# Local-only model files and inspection artifacts
+ollama_models/
+_zip_inspection/
