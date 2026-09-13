@@ -11,6 +11,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -182,8 +183,128 @@ def _fallback_query(history: list[dict[str, Any]], current: str) -> str:
         str(item.get("content", ""))
         for item in history
         if item.get("role") == "user" and item.get("content")
-    ][-2:]
+    ]
+    if previous_questions and previous_questions[-1].strip() == current.strip():
+        previous_questions.pop()
+    previous_questions = previous_questions[-1:]
     return "；".join(previous_questions + [current]).strip()
+
+
+def _fallback_intent(message: str) -> str:
+    """Route common questions safely when no generative model is available."""
+
+    compact = re.sub(r"\s+", "", message)
+    if any(term in compact for term in ("一天", "每日", "一天最多", "幾個", "幾份", "可以吃多少")):
+        return "intake"
+    if any(term in compact for term in ("過敏", "過敏原", "奶類", "乳類", "雞蛋", "蛋類")):
+        return "allergen"
+    if any(term in compact for term in ("宣稱", "高蛋白", "低鈉", "無糖", "零糖", "高纖", "低脂")):
+        return "claim"
+    if any(term in compact for term in ("營養標示", "標示完整", "缺少欄位")):
+        return "nutrition_label"
+    if any(term in compact for term in ("高血壓", "糖尿病", "腎臟病", "腎病", "高血脂", "血脂")):
+        return "health_guidance"
+    return "search"
+
+
+def _claim_from_question(message: str, current_claims: list[str]) -> str:
+    match = re.search(
+        r"(高|低|無|零|不含|富含|多)\s*(蛋白質|蛋白|膳食纖維|纖維|糖|鈉|脂肪|鈣|鐵)",
+        message,
+    )
+    if match:
+        nutrient = {"蛋白": "蛋白質", "纖維": "膳食纖維"}.get(match.group(2), match.group(2))
+        return f"{match.group(1)}{nutrient}"
+    return "、".join(current_claims)
+
+
+def _intake_clarification(product_data: dict[str, Any] | None) -> str:
+    product = product_data or {}
+    product_name = str(product.get("product_name") or "這項食品")
+    nutrition = product.get("nutrition", {}) if isinstance(product.get("nutrition"), dict) else {}
+    serving_size = nutrition.get("serving_size")
+    serving_note = (
+        f"目前營養標示只有每份量 {serving_size}，仍不知道一份等於幾個。"
+        if serving_size
+        else "目前也缺少每份重量或每份包含幾個。"
+    )
+    return (
+        f"目前無法只依「成年男性」判定一天最多可以吃幾個{product_name}。\n\n"
+        f"- {serving_note}\n"
+        "- 還需要確認你想控制的是熱量、糖、鈉、脂肪或其他營養素。\n"
+        "- 個人疾病、用藥與飲食目標也會影響建議，系統不能直接做醫療診斷。\n\n"
+        "請補充「每個重量或一份有幾個」以及想控制的營養項目，我才能依官方資料換算。"
+    )
+
+
+def _allergen_answer(question: str, result: dict[str, Any]) -> str:
+    detected = [item for item in result.get("detected_allergens", []) if isinstance(item, dict)]
+    if not detected:
+        return str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
+
+    focused = detected
+    if any(term in question for term in ("奶", "乳")):
+        focused = [item for item in detected if "奶" in str(item.get("category", ""))] or detected
+    elif "蛋" in question:
+        focused = [item for item in detected if "蛋" in str(item.get("category", ""))] or detected
+
+    descriptions = []
+    for item in focused:
+        ingredients = "、".join(str(value) for value in item.get("source_ingredients", []))
+        descriptions.append(f"{ingredients or '相關成分'} → {item.get('category', '未分類過敏原')}")
+
+    lines = ["依目前產品成分，系統辨識到：", *[f"- {item}" for item in descriptions]]
+    if "為什麼" in question:
+        lines.extend(
+            [
+                "",
+                "這裡代表該成分被歸入官方標示需注意的過敏原類別，不代表每個人食用後都會過敏。",
+                "現有法規來源主要說明標示要求；若要解釋個人的過敏原因，仍需要醫療專業評估。",
+            ]
+        )
+    else:
+        lines.append("請再確認包裝是否清楚標示相關過敏原警語。")
+    return "\n".join(lines)
+
+
+def _structured_fallback_answer(
+    intent: str,
+    question: str,
+    payload: dict[str, Any],
+) -> str:
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    if intent == "allergen":
+        return _allergen_answer(question, result)
+    if intent == "nutrition_label":
+        missing = "、".join(str(item) for item in result.get("missing_fields", []))
+        answer = str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
+        return f"{answer}\n- 需要補充或確認：{missing}" if missing else answer
+    if intent == "claim":
+        evaluation = result.get("numeric_evaluation")
+        answer = str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
+        if isinstance(evaluation, dict):
+            return (
+                f"{answer}\n- 比較基準：{evaluation.get('basis', '來源條件')}\n"
+                f"- 輸入值：{evaluation.get('actual')}\n"
+                f"- 來源門檻：{evaluation.get('comparison')} {evaluation.get('threshold')}"
+            )
+        return answer
+
+    sources = payload.get("sources", [])
+    if sources:
+        titles: list[str] = []
+        for source in sources:
+            title = Path(str(source.get("document", ""))).stem
+            if title and title not in titles:
+                titles.append(title)
+        topics = "、".join(titles[:4])
+        if intent == "health_guidance":
+            return (
+                "目前找到相關官方資料，但現有結構化規則不足以直接產生個人飲食上限。"
+                "請提供目前食品的每份營養數值與要注意的疾病項目。"
+            )
+        return f"目前可查到與問題相關的官方資料主題：{topics}。請把問題縮小到特定標示、成分或營養宣稱。"
+    return NOT_ENOUGH_EVIDENCE
 
 
 def _synthesize_payloads(
@@ -216,7 +337,7 @@ def _llm_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _answer_with_sources(answer: str, sources: list[dict[str, Any]]) -> str:
-    """Add compact source citations without exposing raw retrieved chunks."""
+    """Keep evidence structured separately from the public answer text."""
 
     answer = _sanitize_answer(answer, sources)
     if not answer:
@@ -225,12 +346,7 @@ def _answer_with_sources(answer: str, sources: list[dict[str, Any]]) -> str:
         if NOT_ENOUGH_EVIDENCE not in answer:
             answer = f"{answer}\n\n{NOT_ENOUGH_EVIDENCE}".strip()
         return answer
-
-    lines = [answer, "", "法規來源："]
-    for number, source in enumerate(sources, start=1):
-        source_title = Path(str(source.get("document", "未提供文件名稱"))).stem
-        lines.append(f"{number}. {source_title}，第 {source.get('page', '—')} 頁")
-    return "\n".join(lines)
+    return answer
 
 
 def _sanitize_answer(answer: str, sources: list[dict[str, Any]]) -> str:
@@ -409,32 +525,66 @@ class FoodGuardMCPClient:
         except Exception:
             return fallback
 
-    async def _ask_without_llm(self, user_message: str) -> ClientResponse:
-        """Answer with a source-preserving MCP search when no LLM is configured.
+    async def _ask_without_llm(
+        self, user_message: str, *, append_user: bool = True
+    ) -> ClientResponse:
+        """Route to structured tools and answer safely without a paid LLM."""
 
-        This keeps the public demo usable without a paid API or a local Ollama
-        process. It is intentionally retrieval-only: it never invents a legal
-        conclusion and reports insufficient evidence when the knowledge base
-        has no matching source.
-        """
-
-        self.history.append({"role": "user", "content": user_message})
+        contextual_query = _fallback_query(self.history, user_message)
+        intent = _fallback_intent(user_message)
+        if intent == "search" and len(user_message.strip()) <= 12:
+            contextual_intent = _fallback_intent(contextual_query)
+            if contextual_intent != "search":
+                intent = contextual_intent
+        if append_user:
+            self.history.append({"role": "user", "content": user_message})
         sources: list[dict[str, Any]] = []
         called_tools: list[str] = []
-        try:
-            payload = await self.call_tool(
-                "search_food_regulation",
-                {"query": _fallback_query(self.history, user_message)},
-            )
-            called_tools.append("search_food_regulation")
-            _collect_sources(payload, sources)
-        except Exception:
-            pass
+        payload: dict[str, Any] = {"result": {}, "sources": []}
 
-        if sources:
-            answer = "目前知識庫找到與問題相關的官方資料，已整理成重點；請展開來源查看依據。"
+        if intent == "intake":
+            answer = _intake_clarification(self.current_product)
         else:
-            answer = NOT_ENOUGH_EVIDENCE
+            product = self.current_product or {}
+            tool_name = "search_food_regulation"
+            arguments: dict[str, Any] = {"query": contextual_query}
+            if intent == "allergen":
+                ingredients = product.get("ingredients", [])
+                if not ingredients:
+                    answer = "請先提供食品成分，才能辨識可能的過敏原。"
+                    answer = _answer_with_sources(answer, sources)
+                    self.history.append({"role": "assistant", "content": answer})
+                    return ClientResponse(
+                        answer=answer,
+                        sources=sources,
+                        tool_calls=called_tools,
+                        evidence_synthesis=synthesize_evidence(sources),
+                    )
+                tool_name = "check_allergens"
+                arguments = {"ingredients": ingredients}
+            elif intent == "nutrition_label":
+                tool_name = "check_nutrition_label"
+                arguments = {"nutrition_data": product.get("nutrition", {})}
+            elif intent == "claim":
+                tool_name = "check_nutrition_claim"
+                arguments = {
+                    "claim": _claim_from_question(
+                        contextual_query, list(product.get("claims", []))
+                    ),
+                    "nutrition_data": product.get("nutrition", {}),
+                }
+
+            try:
+                payload = await self.call_tool(tool_name, arguments)
+                called_tools.append(tool_name)
+                _collect_sources(payload, sources)
+            except Exception:
+                payload = {
+                    "result": {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE},
+                    "sources": [],
+                }
+            answer = _structured_fallback_answer(intent, contextual_query, payload)
+
         answer = _answer_with_sources(answer, sources)
         self.history.append({"role": "assistant", "content": answer})
         return ClientResponse(
@@ -528,33 +678,9 @@ class FoodGuardMCPClient:
                     max_tokens=500,
                 )
             except Exception:
-                # A slow/unavailable LLM must not discard local MCP evidence
-                # or make the demo crash. Retrieve a broad food-law answer
-                # once and use a source-preserving local summary.
-                if not sources and _looks_like_food_question(user_message):
-                    fallback_arguments = {
-                        "query": _fallback_query(self.history, user_message)
-                    }
-                    try:
-                        payload = await self.call_tool(
-                            "search_food_regulation", fallback_arguments
-                        )
-                        called_tools.append("search_food_regulation")
-                        _collect_sources(payload, sources)
-                    except Exception:
-                        pass
-                fallback_text = (
-                    "目前無法使用語言模型；已保留可供核對的官方資料來源，請展開來源查看。"
-                    if sources
-                    else NOT_ENOUGH_EVIDENCE
-                )
-                self.history.append({"role": "assistant", "content": fallback_text})
-                return ClientResponse(
-                    answer=_answer_with_sources(fallback_text, sources),
-                    sources=sources,
-                    tool_calls=called_tools,
-                    evidence_synthesis=synthesize_evidence(sources),
-                )
+                # Expired keys, quota errors and unavailable local models all
+                # use the same deterministic intent router as no-LLM mode.
+                return await self._ask_without_llm(user_message, append_user=False)
             message = completion.choices[0].message
             tool_calls = getattr(message, "tool_calls", None) or []
             if not tool_calls:

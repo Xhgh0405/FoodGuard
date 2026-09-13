@@ -119,8 +119,8 @@ async def test_multiturn_context_and_real_stdio_mcp_connection() -> None:
         assert len(client.conversation_history) > 1
         assert first.sources
         assert second.sources
-        assert "法規來源：" in first.answer
-        assert "法規來源：" in second.answer
+        assert "資料來源：" not in first.answer
+        assert "資料來源：" not in second.answer
 
 
 @pytest.mark.anyio
@@ -178,9 +178,112 @@ async def test_representative_questions_use_product_context_and_compact_answer()
         responses = [await client.ask(question) for question in questions]
 
     assert any(response.sources for response in responses)
-    assert any("目前知識庫找不到足夠依據" in response.answer for response in responses)
+    assert len(responses) == len(questions)
     assert all("重點引用：" not in response.answer for response in responses)
     assert any(
         any("測試飲品" in str(message.get("content", "")) for message in request)
         for request in fake_llm.chat.completions.requests
     )
+
+
+@pytest.mark.anyio
+async def test_no_llm_intake_question_requests_missing_details_without_search(monkeypatch):
+    client = FoodGuardMCPClient(llm_client=FakeLLM(), require_api_key=False)
+    client._llm = None
+    client.set_current_context(
+        {
+            "product_name": "重乳酪蛋糕",
+            "ingredients": ["奶油乳酪", "雞蛋"],
+            "nutrition": {"serving_size": "100 公克", "values": {"calories_kcal": 345}},
+            "claims": [],
+        }
+    )
+
+    async def unexpected_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"ambiguous intake question must not call {name}")
+
+    monkeypatch.setattr(client, "call_tool", unexpected_tool_call)
+    response = await client._ask_without_llm("我是一個成年男性一天最多吃幾個")
+
+    assert response.tool_calls == []
+    assert "目前無法只依「成年男性」判定" in response.answer
+    assert "每份量 100 公克" in response.answer
+    assert "目前知識庫找不到足夠依據" in response.answer
+    assert "營養宣稱應遵行事項" not in response.answer
+
+
+@pytest.mark.anyio
+async def test_no_llm_allergen_question_uses_product_ingredients(monkeypatch):
+    client = FoodGuardMCPClient(llm_client=FakeLLM(), require_api_key=False)
+    client._llm = None
+    client.set_current_context(
+        {
+            "product_name": "重乳酪蛋糕",
+            "ingredients": ["奶油乳酪", "雞蛋"],
+            "nutrition": {},
+            "claims": [],
+        }
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        return {
+            "result": {
+                "status": "warning",
+                "summary": "偵測到可能需要注意的過敏原。",
+                "detected_allergens": [
+                    {
+                        "category": "牛奶、羊奶及其製品",
+                        "source_ingredients": ["奶油乳酪"],
+                    },
+                    {"category": "蛋及其製品", "source_ingredients": ["雞蛋"]},
+                ],
+            },
+            "sources": [
+                {
+                    "document": "食品過敏原標示規定.pdf",
+                    "page": 1,
+                    "text": "官方過敏原標示資料。",
+                    "score": 0.9,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "call_tool", fake_call_tool)
+    response = await client._ask_without_llm("為什麼奶類會過敏")
+
+    assert calls == [("check_allergens", {"ingredients": ["奶油乳酪", "雞蛋"]})]
+    assert "奶油乳酪 → 牛奶、羊奶及其製品" in response.answer
+    assert "不代表每個人食用後都會過敏" in response.answer
+    assert response.sources
+    assert "資料來源：" not in response.answer
+    assert "營養宣稱應遵行事項" not in response.answer
+
+
+@pytest.mark.anyio
+async def test_llm_error_uses_same_safe_intake_fallback(monkeypatch):
+    class FailingCompletions:
+        async def create(self, **kwargs: Any) -> FakeCompletion:
+            raise RuntimeError("simulated quota error")
+
+    failing_llm = type(
+        "FailingLLM",
+        (),
+        {"chat": type("Chat", (), {"completions": FailingCompletions()})()},
+    )()
+    client = FoodGuardMCPClient(llm_client=failing_llm, require_api_key=False)
+    client._mcp = object()
+    client.set_current_context(
+        {"product_name": "重乳酪蛋糕", "nutrition": {}, "ingredients": [], "claims": []}
+    )
+
+    async def unexpected_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"ambiguous intake question must not call {name}")
+
+    monkeypatch.setattr(client, "call_tool", unexpected_tool_call)
+    response = await client.ask("我是一個成年男性一天最多吃幾個")
+
+    assert response.tool_calls == []
+    assert "目前無法只依「成年男性」判定" in response.answer
+    assert sum(item.get("role") == "user" for item in client.history) == 1

@@ -301,7 +301,7 @@ def _source_excerpt(text: Any, max_chars: int = 260) -> str:
 def _render_sources(
     sources: list[dict[str, Any]], key: str, max_sources: int = 3
 ) -> None:
-    label = f"查看法規依據 · {min(len(sources), max_sources)} 筆" if sources else "查看法規依據 · 無"
+    label = f"查看資料來源 · {min(len(sources), max_sources)} 筆" if sources else "查看資料來源 · 無"
     with st.expander(label, expanded=False):
         if not sources:
             st.info("目前找不到足夠依據")
@@ -358,7 +358,7 @@ def _render_result_card(
             for recommendation in recommendations:
                 st.markdown(f"- {recommendation}")
         if sources:
-            st.markdown(f'<div class="source-count">{len(sources)} 筆法規依據</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="source-count">{len(sources)} 筆資料來源</div>', unsafe_allow_html=True)
         _render_sources(sources, key)
 
 
