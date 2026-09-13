@@ -407,9 +407,6 @@ def _initialise_state() -> None:
 def _render_product_view() -> None:
     st.markdown('<div class="section-kicker">食品判讀</div>', unsafe_allow_html=True)
     st.header("輸入產品資訊")
-    st.caption(
-        "提供食品包裝上的成分、營養標示與營養宣稱，系統將依據知識庫中的官方規範進行判讀。"
-    )
     with st.container(border=True):
         left, right = st.columns([1.65, 1], gap="large")
         with left:
