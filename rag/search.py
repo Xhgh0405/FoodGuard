@@ -49,10 +49,15 @@ def _keyword_search(query: str, top_k: int) -> list[dict[str, Any]]:
     terms = _query_terms(query)
     if not terms:
         return []
+    # Preserve long Chinese phrases separately.  Counting only character
+    # n-grams gives unrelated documents the same capped score as the exact
+    # regulation title, which is especially damaging before source filtering.
+    phrases = [sequence.casefold() for sequence in re.findall(r"[\u4e00-\u9fff]+", query) if len(sequence) >= 4]
 
     matches: list[dict[str, Any]] = []
     for item in _load_keyword_chunks(str(documents_dir().resolve())):
-        haystack = f"{item.get('source', '')} {item.get('text', '')}".casefold()
+        source_text = str(item.get("source", "")).casefold()
+        haystack = f"{source_text} {item.get('text', '')}".casefold()
         hit_count = sum(1 for term in terms if term in haystack)
         if not hit_count:
             continue
@@ -60,7 +65,20 @@ def _keyword_search(query: str, top_k: int) -> list[dict[str, Any]]:
         # keyword hit pass the normal evidence threshold; it is not a legal
         # confidence score.
         result = dict(item)
-        result["score"] = min(0.89, 0.35 + 0.08 * hit_count)
+        exact_phrase_hits = sum(1 for phrase in phrases if phrase in haystack)
+        exact_source_hits = sum(1 for phrase in phrases if phrase in source_text)
+        long_phrase_hits = sum(1 for phrase in phrases if len(phrase) >= 8 and phrase in haystack)
+        short_phrase_hits = exact_phrase_hits - long_phrase_hits
+        # Prefer an exact official document title over unrelated references
+        # that happen to contain many nutrient names.
+        result["score"] = round(
+            0.35
+            + 0.005 * hit_count
+            + 0.7 * long_phrase_hits
+            + 0.06 * short_phrase_hits
+            + 0.5 * exact_source_hits,
+            6,
+        )
         matches.append(result)
     matches.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
     return matches[:top_k]

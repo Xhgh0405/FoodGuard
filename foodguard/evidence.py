@@ -29,7 +29,14 @@ def retrieve_evidence(
     """Return only relevant, unique evidence for one analysis task."""
 
     searcher = search_function or default_search
-    retrieved = searcher(query, max(10, top_k * 3))
+    # Source-constrained tasks must inspect enough candidates before applying
+    # the source filter.  The keyword fallback otherwise lets unrelated
+    # nutrition-reference chunks occupy the first ten results and then loses
+    # the correct regulation entirely.
+    search_limit = max(10, top_k * 3)
+    if source_hints:
+        search_limit = max(100, top_k * 20)
+    retrieved = searcher(query, search_limit)
     min_score = _minimum_score()
     scored = [
         item
@@ -78,6 +85,7 @@ def retrieve_evidence(
     debug = {
         "query": query,
         "retrieved_count": len(retrieved),
+        "search_limit": search_limit,
         "retrieved_chunks": [
             {
                 "source": item.get("source"),

@@ -287,3 +287,55 @@ async def test_llm_error_uses_same_safe_intake_fallback(monkeypatch):
     assert response.tool_calls == []
     assert "目前無法只依「成年男性」判定" in response.answer
     assert sum(item.get("role") == "user" for item in client.history) == 1
+
+
+@pytest.mark.anyio
+async def test_diabetes_followup_uses_product_and_explicit_consumption_amount(monkeypatch):
+    client = FoodGuardMCPClient(llm_client=FakeLLM(), require_api_key=False)
+    client._llm = None
+    client._mcp = object()
+    client.set_current_context(
+        {
+            "product_name": "高蛋白豆漿",
+            "ingredients": ["黃豆蛋白"],
+            "nutrition": {
+                "raw_text": "每100毫升\n糖 4 公克\n碳水化合物 5 公克",
+                "values": {"sugar_g": 4, "carbohydrate_g": 5},
+                "nutrition_basis": {"amount": 100, "unit": "ml"},
+            },
+            "claims": ["高蛋白"],
+        }
+    )
+
+    async def fake_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "search_disease_guideline":
+            return {
+                "result": {"status": "pass", "disease": "糖尿病", "knowledge_domain": "disease_guidance"},
+                "sources": [{"document": "糖尿病與我.pdf", "page": 10, "text": "糖尿病飲食指引", "score": 0.9, "knowledge_domain": "disease_guidance"}],
+            }
+        if name == "calculate_consumption_nutrients":
+            return {
+                "result": {
+                    "status": "calculated",
+                    "amount": 2000.0,
+                    "unit": "ml",
+                    "scaled_values": {"sugar_g": 80.0, "carbohydrate_g": 100.0},
+                },
+                "sources": [],
+            }
+        raise AssertionError(name)
+
+    monkeypatch.setattr(client, "call_tool", fake_call_tool)
+    first = await client.ask("糖尿病能喝嗎？")
+    second = await client.ask("喝2000毫升")
+
+    assert first.tool_calls == ["search_disease_guideline"]
+    assert second.tool_calls == ["calculate_consumption_nutrients", "search_disease_guideline"]
+    assert "高蛋白豆漿" in second.answer
+    assert "糖：80" in second.answer
+    assert "碳水化合物：100" in second.answer
+    assert "缺少份量" not in second.answer
+    assert second.diagnostics["llm_used"] is False
+    assert second.diagnostics["current_product"] == "高蛋白豆漿"
+    assert second.diagnostics["parsed_follow_up"]["consumption_amount"] == 2000.0
+    assert second.diagnostics["consumption_context"]["consumption_unit"] == "ml"

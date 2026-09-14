@@ -114,6 +114,15 @@ def parse_nutrition(value: Any) -> dict[str, Any]:
         r"本包裝\s*(?:含|有)\s*([0-9]+(?:\.[0-9]+)?)\s*份", raw_text
     )
 
+    if serving_match:
+        amount_match = re.search(r"[0-9]+(?:\.[0-9]+)?", serving_match.group(1))
+        unit_match = re.search(r"(公克|克|g|毫升|ml|mL)", serving_match.group(1), re.IGNORECASE)
+        basis_amount = float(amount_match.group()) if amount_match else None
+        basis_unit = "ml" if unit_match and unit_match.group(1).lower() in {"ml", "毫升"} else "g"
+    else:
+        basis_amount = None
+        basis_unit = None
+
     provided_fields = [FIELD_LABELS[field] for field in FIELD_LABELS if field in values]
     return {
         "raw_text": raw_text,
@@ -121,6 +130,11 @@ def parse_nutrition(value: Any) -> dict[str, Any]:
         "provided_fields": provided_fields,
         "serving_size": serving_match.group(1) if serving_match else None,
         "servings_per_package": float(package_match.group(1)) if package_match else None,
+        "nutrition_basis": {
+            "amount": basis_amount,
+            "unit": basis_unit,
+            "source": "serving_size" if serving_match else None,
+        },
     }
 
 

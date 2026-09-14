@@ -10,6 +10,7 @@ import re
 from typing import Any, Iterable
 
 from .parsing import FIELD_LABELS
+from .claim_rules import evaluate_claim_rule
 
 
 ALLERGEN_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -26,6 +27,30 @@ ALLERGEN_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("亞硫酸鹽類製品", ("亞硫酸", "偏亞硫酸", "二氧化硫")),
 )
 
+NON_EGG_PROTEIN_TERMS = (
+    "大豆蛋白",
+    "黃豆蛋白",
+    "分離大豆蛋白",
+    "soy protein",
+    "isolated soy protein",
+    "豌豆蛋白",
+    "乳清蛋白",
+    "蛋白質",
+)
+
+
+def _matches_allergen(category: str, ingredient: str, terms: tuple[str, ...]) -> list[str]:
+    """Match a label ingredient without treating plant protein as egg."""
+
+    text = str(ingredient)
+    normalized = text.lower()
+    if category == "蛋及其製品" and any(term.lower() in normalized for term in NON_EGG_PROTEIN_TERMS):
+        # Keep explicit egg ingredients valid, while preventing the generic
+        # substring「蛋白」/「蛋」from contaminating soy or whey protein.
+        if not any(term in text for term in ("雞蛋", "鴨蛋", "蛋黃", "全蛋", "蛋粉")):
+            return []
+    return [term for term in terms if term.lower() in normalized]
+
 NUTRITION_ORDER = tuple(FIELD_LABELS.values())
 FIELD_BY_LABEL = {label: field for field, label in FIELD_LABELS.items()}
 
@@ -36,7 +61,7 @@ def analyse_allergens(ingredients: Iterable[str]) -> dict[str, Any]:
         matched_ingredients: list[str] = []
         matched_terms: list[str] = []
         for ingredient in ingredients:
-            hits = [term for term in terms if term in ingredient]
+            hits = _matches_allergen(category, str(ingredient), terms)
             if hits:
                 matched_ingredients.append(ingredient)
                 matched_terms.extend(hit for hit in hits if hit not in matched_terms)
@@ -66,6 +91,7 @@ def analyse_allergens(ingredients: Iterable[str]) -> dict[str, Any]:
     ]
     return {
         "status": status,
+        "detection_status": "detected" if detected else "not_detected",
         "title": "過敏原分析",
         "summary": summary,
         "findings": findings,
@@ -105,6 +131,7 @@ def analyse_nutrition_label(
     ]
     return {
         "status": status,
+        "regulation_evidence_status": "sufficient" if evidence and required else "insufficient",
         "title": "營養標示完整性",
         "summary": summary,
         "findings": findings,
@@ -167,6 +194,7 @@ def analyse_nutrition_claim(
     if not claims:
         return {
             "status": "not_applicable",
+            "regulation_evidence_status": "not_required",
             "title": "營養宣稱",
             "summary": "目前未提供營養宣稱，因此不需要進行營養宣稱合規判定。",
             "findings": [],
@@ -179,6 +207,7 @@ def analyse_nutrition_claim(
     if not evidence:
         return {
             "status": "insufficient_evidence",
+            "regulation_evidence_status": "insufficient",
             "title": "營養宣稱",
             "summary": "目前找不到足夠依據確認此營養宣稱。",
             "findings": [],
@@ -187,11 +216,22 @@ def analyse_nutrition_claim(
             "claims": claims,
         }
 
-    threshold = _extract_high_threshold(claims[0], evidence)
-    evaluation: dict[str, Any] | None = None
+    structured = evaluate_claim_rule(claims[0], nutrition)
+    evaluation: dict[str, Any] | None = structured.get("evaluation") if structured else None
+    threshold = (
+        structured.get("rule")
+        if structured and evaluation
+        else _extract_high_threshold(claims[0], evidence)
+    )
     status = "warning"
     summary = "已找到營養宣稱相關依據，但目前無法從來源完整抽取適用條件。"
-    if threshold:
+    if structured and evaluation:
+        status = "pass" if evaluation["met"] else "fail"
+        summary = (
+            f"依結構化官方規則的{evaluation['basis']}條件，數值比較結果為"
+            f"{'達到' if evaluation['met'] else '未達到'}來源條件。"
+        )
+    elif threshold and "solid_threshold" in threshold:
         values = nutrition.get("values", {})
         actual = values.get(threshold["field"])
         serving_size = str(nutrition.get("serving_size") or "")
@@ -223,6 +263,7 @@ def analyse_nutrition_claim(
 
     return {
         "status": status,
+        "regulation_evidence_status": "sufficient" if evidence else "insufficient",
         "title": "營養宣稱",
         "summary": summary,
         "findings": [{"claim": item, "evaluation": evaluation} for item in claims],

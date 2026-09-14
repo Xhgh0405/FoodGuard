@@ -23,6 +23,7 @@ from mcp.client.stdio import StdioServerParameters
 from openai import AsyncOpenAI
 
 from foodguard.synthesis import NOT_ENOUGH_EVIDENCE, synthesize_evidence
+from foodguard.context import parse_consumption_amount
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -67,6 +68,68 @@ class ClientResponse:
     sources: list[dict[str, Any]]
     tool_calls: list[str]
     evidence_synthesis: dict[str, Any] | None = None
+    diagnostics: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class LocalToolDescriptor:
+    """The small subset of an MCP Tool needed by the OpenAI tool schema."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+_LOCAL_TOOL_SCHEMAS: dict[str, tuple[str, dict[str, Any]]] = {
+    "search_food_regulation": (
+        "Search imported official food-regulation sources.",
+        {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    ),
+    "search_disease_guideline": (
+        "Search official disease dietary guidance.",
+        {
+            "type": "object",
+            "properties": {
+                "disease": {"type": "string"},
+                "query": {"type": "string"},
+                "product_context": {"type": "object"},
+            },
+            "required": ["disease"],
+        },
+    ),
+    "calculate_consumption_nutrients": (
+        "Scale nutrition-label values to an explicitly supplied amount.",
+        {
+            "type": "object",
+            "properties": {
+                "nutrition_data": {"type": "object"},
+                "consumption_amount": {"type": "number"},
+                "consumption_unit": {"type": "string"},
+            },
+            "required": ["nutrition_data", "consumption_amount", "consumption_unit"],
+        },
+    ),
+    "check_allergens": (
+        "Classify possible allergens in the supplied ingredients.",
+        {
+            "type": "object",
+            "properties": {"ingredients": {"oneOf": [{"type": "string"}, {"type": "array"}]}},
+            "required": ["ingredients"],
+        },
+    ),
+    "check_nutrition_label": (
+        "Check nutrition-label completeness.",
+        {"type": "object", "properties": {"nutrition_data": {"type": "object"}}, "required": ["nutrition_data"]},
+    ),
+    "check_nutrition_claim": (
+        "Check a nutrition claim against the structured official rules.",
+        {
+            "type": "object",
+            "properties": {"claim": {"type": "string"}, "nutrition_data": {"type": "object"}},
+            "required": ["claim", "nutrition_data"],
+        },
+    ),
+}
 
 
 def _get_setting(name: str, default: str = "") -> str:
@@ -90,9 +153,19 @@ def _load_settings(require_key: bool = True) -> tuple[str, str, str | None]:
         raise RuntimeError(
             "OPENAI_API_KEY is missing. Copy .env.example to .env and set the real API key."
         )
-    model = _get_setting("OPENAI_MODEL", "gpt-4o-mini")
+    model = _get_setting("LLM_MODEL") or _get_setting("OPENAI_MODEL", "gpt-4o-mini")
     base_url = _get_setting("OPENAI_BASE_URL") or None
     return api_key, model, base_url
+
+
+def _configured_provider(base_url: str | None = None) -> str:
+    explicit = _get_setting("LLM_PROVIDER")
+    if explicit:
+        return explicit.lower()
+    configured_url = base_url or _get_setting("OPENAI_BASE_URL")
+    if "11434" in configured_url or "ollama" in configured_url.lower():
+        return "ollama"
+    return "cloud" if configured_url or _get_setting("OPENAI_API_KEY") else "none"
 
 
 def _configure_console_encoding() -> None:
@@ -208,6 +281,8 @@ def _fallback_intent(message: str) -> str:
     """Route common questions safely when no generative model is available."""
 
     compact = re.sub(r"\s+", "", message)
+    if parse_consumption_amount(message):
+        return "consumption"
     if any(term in compact for term in ("一天", "每日", "一天最多", "幾個", "幾份", "可以吃多少")):
         return "intake"
     if any(term in compact for term in ("過敏", "過敏原", "奶類", "乳類", "雞蛋", "蛋類")):
@@ -288,6 +363,31 @@ def _structured_fallback_answer(
     product: dict[str, Any] | None = None,
 ) -> str:
     result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    if intent == "consumption":
+        if result.get("status") != "calculated":
+            return str(result.get("message") or NOT_ENOUGH_EVIDENCE)
+        labels = {
+            "sugar_g": "糖", "carbohydrate_g": "碳水化合物", "protein_g": "蛋白質",
+            "sodium_mg": "鈉", "fat_g": "脂肪", "calories_kcal": "熱量",
+        }
+        product_name = str((product or {}).get("product_name") or "目前食品")
+        lines = [f"依目前食品「{product_name}」標示，{result.get('amount'):g}{result.get('unit')}的換算結果為："]
+        lines.extend(
+            f"- {labels[field]}：{value:g}"
+            for field, value in result.get("scaled_values", {}).items()
+            if field in labels
+        )
+        disease_result = payload.get("disease_result", {})
+        if isinstance(disease_result, dict) and disease_result.get("sources"):
+            disease_name = disease_result.get("result", {}).get("disease") or "疾病"
+            lines.append(
+                f"已同時帶入{disease_name}官方飲食指引；上述數值只能用來比較此次攝取量，"
+                "不能直接推導個人的每日安全上限。"
+            )
+        else:
+            lines.append("這是依標示基準量的比例換算，不代表個人的每日安全上限。")
+        lines.append("是否適合仍須配合整餐碳水化合物、用藥、血糖與醫囑判斷。")
+        return "\n".join(lines)
     if intent == "allergen":
         return _allergen_answer(question, result)
     if intent == "nutrition_label":
@@ -360,8 +460,8 @@ def _structured_fallback_answer(
             if missing:
                 return (
                     f"針對目前產品「{product_name}」，已找到與{disease}相關的官方飲食資料，"
-                    f"但目前缺少：{'、'.join(missing)}，所以還不能可靠判定是否適合飲用。"
-                    f"\n- 已提供：{'、'.join(provided) if provided else '尚未提供糖尿病判斷所需的營養資料'}。"
+                    f"但目前缺少：{ '、'.join(missing) }，所以還不能可靠判定是否適合飲用。"
+                    f"\n- 已提供：{ '、'.join(provided) if provided else '尚未提供糖尿病判斷所需的營養資料' }。"
                     f"\n- {ingredient_note}"
                     "\n- 請補齊標示資料，並依個人用藥與醫囑決定份量；這不取代醫療診斷。"
                 )
@@ -445,7 +545,14 @@ def _deterministic_analysis_summary(
 
 
 class FoodGuardMCPClient:
-    """A stateful client that talks to FoodGuard MCP over stdio."""
+    """A stateful client for FoodGuard MCP.
+
+    Stdio is the normal transport.  Some Windows-hosted Streamlit runtimes
+    deny the overlapped named pipes used by the MCP SDK, though.  In that
+    case we keep the same client orchestration and call the exact server tool
+    functions in-process as a transport fallback.  This is still the real
+    parsing -> RAG -> rule pipeline; it only avoids the blocked pipe.
+    """
 
     def __init__(
         self,
@@ -464,9 +571,17 @@ class FoodGuardMCPClient:
         self.history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._mcp: Client | None = None
         self._tools: list[Any] = []
+        self._local_tools: dict[str, Any] = {}
+        self.transport_mode = "stdio"
+        self.transport_fallback_reason: str | None = None
         self._llm = llm_client
+        self.provider = _configured_provider(base_url)
         self.current_product: dict[str, Any] | None = None
         self.current_analysis: dict[str, Any] | None = None
+        self.consumption_context: dict[str, Any] | None = None
+        self._last_llm_used = False
+        self._last_parsed_followup: dict[str, Any] | None = None
+        self._last_previous_context: str | None = None
         if self._llm is None and api_key:
             try:
                 timeout = float(_get_setting("OPENAI_TIMEOUT", "20"))
@@ -479,6 +594,42 @@ class FoodGuardMCPClient:
                 max_retries=0,
             )
 
+    def _diagnostics(
+        self,
+        *,
+        intent: str | None,
+        tool_calls: list[str],
+        sources: list[dict[str, Any]],
+        answer_source: str,
+        fallback_reason: str | None = None,
+        llm_used: bool | None = None,
+    ) -> dict[str, Any]:
+        domains = sorted({str(item.get("knowledge_domain")) for item in sources if item.get("knowledge_domain")})
+        result: dict[str, Any] = {
+            "llm_used": self._last_llm_used if llm_used is None else llm_used,
+            "llm_provider": self.provider,
+            "llm_model": self.model if self.provider != "none" else None,
+            "current_product": (self.current_product or {}).get("product_name"),
+            "conversation_turns": sum(1 for item in self.history if item.get("role") == "user"),
+            "conversation_messages": len(self.history),
+            "intent": intent,
+            "mcp_tools_called": list(tool_calls),
+            "mcp_transport": self.transport_mode,
+            "rag_domains": domains,
+            "evidence_count": len(sources),
+            "evidence_status": "available" if sources else "insufficient",
+            "answer_source": answer_source,
+        }
+        if self._last_parsed_followup:
+            result["parsed_follow_up"] = dict(self._last_parsed_followup)
+        if self._last_previous_context:
+            result["previous_context"] = self._last_previous_context
+        if self.consumption_context:
+            result["consumption_context"] = dict(self.consumption_context)
+        if fallback_reason:
+            result["fallback_reason"] = fallback_reason
+        return result
+
     def set_current_context(
         self,
         product_data: dict[str, Any] | None = None,
@@ -488,6 +639,29 @@ class FoodGuardMCPClient:
 
         self.current_product = copy.deepcopy(product_data) if product_data else None
         self.current_analysis = copy.deepcopy(analysis) if analysis else None
+        if self.current_product is not None:
+            nutrition = self.current_product.get("nutrition")
+            if isinstance(nutrition, dict) and nutrition.get("nutrition_basis"):
+                self.current_product["nutrition_basis"] = copy.deepcopy(
+                    nutrition["nutrition_basis"]
+                )
+            if self.current_analysis:
+                mappings = {
+                    "allergens": "allergen_analysis",
+                    "nutrition_label": "label_analysis",
+                    "nutrition_claim": "claim_analysis",
+                }
+                for source_key, target_key in mappings.items():
+                    payload = self.current_analysis.get(source_key)
+                    if isinstance(payload, dict):
+                        self.current_product[target_key] = copy.deepcopy(
+                            payload.get("result", payload)
+                        )
+                for key in ("health_context_analysis", "consumption_context"):
+                    if key in self.current_analysis:
+                        self.current_product[key] = copy.deepcopy(self.current_analysis[key])
+            context = self.current_product.get("consumption_context")
+            self.consumption_context = copy.deepcopy(context) if isinstance(context, dict) else None
 
     def _add_context_message(self) -> None:
         if not self.current_product and not self.current_analysis:
@@ -520,7 +694,17 @@ class FoodGuardMCPClient:
             cwd=PROJECT_ROOT,
         )
         self._mcp = Client(parameters)
-        await self._mcp.__aenter__()
+        try:
+            await self._mcp.__aenter__()
+        except (PermissionError, FileNotFoundError) as exc:
+            # Windows sandboxed/hosted Streamlit processes can reject the
+            # named pipe that the official stdio transport creates.  Do not
+            # turn that infrastructure error into three false "no evidence"
+            # product results: use the same server functions locally.
+            self._mcp = None
+            self._local_tools = self._load_local_tools()
+            self.transport_mode = "in_process"
+            self.transport_fallback_reason = f"{type(exc).__name__}: {exc}"
         await self.refresh_tools()
         return self
 
@@ -528,6 +712,7 @@ class FoodGuardMCPClient:
         if self._mcp is not None:
             await self._mcp.__aexit__(exc_type, exc_value, traceback)
             self._mcp = None
+        self._local_tools = {}
 
     @property
     def conversation_history(self) -> list[dict[str, Any]]:
@@ -535,25 +720,61 @@ class FoodGuardMCPClient:
 
     @property
     def tool_names(self) -> list[str]:
-        return [tool.name for tool in self._tools]
+        return [str(getattr(tool, "name", "")) for tool in self._tools]
 
     async def refresh_tools(self) -> list[str]:
-        if self._mcp is None:
+        if self._mcp is None and not self._local_tools:
             raise RuntimeError("MCP client is not connected.")
-        listed = await self._mcp.list_tools()
-        self._tools = list(listed.tools)
+        if self._mcp is not None:
+            listed = await self._mcp.list_tools()
+            self._tools = list(listed.tools)
+        else:
+            self._tools = [
+                LocalToolDescriptor(name, description, schema)
+                for name, (description, schema) in _LOCAL_TOOL_SCHEMAS.items()
+                if name in self._local_tools
+            ]
         return self.tool_names
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self._mcp is None:
+        if self._mcp is None and not self._local_tools:
             raise RuntimeError("MCP client is not connected.")
         if name not in self.tool_names:
             return {
                 "result": {"status": "unknown_tool", "message": f"MCP tool not available: {name}"},
                 "sources": [],
             }
-        mcp_result = await self._mcp.call_tool(name, arguments)
-        return _payload_from_mcp_result(mcp_result)
+        if self._mcp is not None:
+            mcp_result = await self._mcp.call_tool(name, arguments)
+            return _payload_from_mcp_result(mcp_result)
+        result = self._local_tools[name](**arguments)
+        if hasattr(result, "__await__"):
+            result = await result
+        if not isinstance(result, dict):
+            raise TypeError(f"Local MCP tool {name} returned a non-object result.")
+        return result
+
+    @staticmethod
+    def _load_local_tools() -> dict[str, Any]:
+        """Load the server's registered tool functions for pipe-free fallback."""
+
+        from mcp_server import (
+            calculate_consumption_nutrients,
+            check_allergens,
+            check_nutrition_claim,
+            check_nutrition_label,
+            search_disease_guideline,
+            search_food_regulation,
+        )
+
+        return {
+            "search_food_regulation": search_food_regulation,
+            "check_allergens": check_allergens,
+            "check_nutrition_label": check_nutrition_label,
+            "check_nutrition_claim": check_nutrition_claim,
+            "calculate_consumption_nutrients": calculate_consumption_nutrients,
+            "search_disease_guideline": search_disease_guideline,
+        }
 
     async def summarize_analysis(
         self,
@@ -562,6 +783,7 @@ class FoodGuardMCPClient:
     ) -> str:
         """Use the configured LLM to summarize structured rule results safely."""
 
+        self._last_llm_used = False
         fallback = _deterministic_analysis_summary(product_data, task_results)
         if self._llm is None:
             return fallback
@@ -589,8 +811,10 @@ class FoodGuardMCPClient:
                 max_tokens=350,
             )
             answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
+            self._last_llm_used = bool(answer)
             return answer or fallback
         except Exception:
+            self._last_llm_used = False
             return fallback
 
     async def _ask_without_llm(
@@ -598,6 +822,14 @@ class FoodGuardMCPClient:
     ) -> ClientResponse:
         """Route to structured tools and answer safely without a paid LLM."""
 
+        self._last_llm_used = False
+        self._last_parsed_followup = None
+        previous_users = [
+            str(item.get("content", ""))
+            for item in self.history
+            if item.get("role") == "user" and item.get("content")
+        ]
+        self._last_previous_context = previous_users[-1] if previous_users else None
         contextual_query = _fallback_query(self.history, user_message)
         intent = _fallback_intent(user_message)
         if intent == "search" and len(user_message.strip()) <= 12:
@@ -627,6 +859,12 @@ class FoodGuardMCPClient:
                         sources=sources,
                         tool_calls=called_tools,
                         evidence_synthesis=synthesize_evidence(sources),
+                        diagnostics=self._diagnostics(
+                            intent=intent,
+                            tool_calls=called_tools,
+                            sources=sources,
+                            answer_source="fallback",
+                        ),
                     )
                 tool_name = "check_allergens"
                 arguments = {"ingredients": ingredients}
@@ -641,11 +879,74 @@ class FoodGuardMCPClient:
                     ),
                     "nutrition_data": product.get("nutrition", {}),
                 }
+            elif intent == "consumption":
+                parsed_amount = parse_consumption_amount(user_message)
+                if not parsed_amount:
+                    answer = "請提供明確的消費量，例如 2000 ml 或 500 公克。"
+                    self.history.append({"role": "assistant", "content": answer})
+                    return ClientResponse(
+                        answer=answer,
+                        sources=[],
+                        tool_calls=[],
+                        evidence_synthesis=synthesize_evidence([]),
+                        diagnostics=self._diagnostics(
+                            intent=intent, tool_calls=[], sources=[], answer_source="fallback"
+                        ),
+                    )
+                self._last_parsed_followup = {
+                    "consumption_amount": parsed_amount["amount"],
+                    "consumption_unit": parsed_amount["unit"],
+                    "raw": parsed_amount["raw"],
+                }
+                self.consumption_context = dict(self._last_parsed_followup)
+                if self.current_product is not None:
+                    self.current_product["consumption_context"] = copy.deepcopy(
+                        self.consumption_context
+                    )
+                tool_name = "calculate_consumption_nutrients"
+                arguments = {
+                    "nutrition_data": product.get("nutrition", {}),
+                    "consumption_amount": parsed_amount["amount"],
+                    "consumption_unit": parsed_amount["unit"],
+                }
+            elif intent == "health_guidance":
+                disease = next(
+                    (term for term in ("糖尿病", "高血壓", "腎臟病", "高血脂") if term in contextual_query),
+                    "",
+                )
+                tool_name = "search_disease_guideline"
+                arguments = {
+                    "disease": disease,
+                    "query": contextual_query,
+                    "product_context": product,
+                }
 
             try:
                 payload = await self.call_tool(tool_name, arguments)
                 called_tools.append(tool_name)
                 _collect_sources(payload, sources)
+                if intent == "consumption":
+                    previous_context = contextual_query
+                    disease = next(
+                        (
+                            term
+                            for term in ("糖尿病", "高血壓", "腎臟病", "高血脂")
+                            if term in previous_context
+                        ),
+                        "",
+                    )
+                    if disease:
+                        disease_payload = await self.call_tool(
+                            "search_disease_guideline",
+                            {
+                                "disease": disease,
+                                "query": previous_context,
+                                "product_context": product,
+                            },
+                        )
+                        payload["disease_result"] = disease_payload
+                        called_tools.append("search_disease_guideline")
+                        _collect_sources(disease_payload, sources)
             except Exception:
                 payload = {
                     "result": {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE},
@@ -662,6 +963,12 @@ class FoodGuardMCPClient:
             sources=sources,
             tool_calls=called_tools,
             evidence_synthesis=synthesize_evidence(sources),
+            diagnostics=self._diagnostics(
+                intent=intent,
+                tool_calls=called_tools,
+                sources=sources,
+                answer_source="rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback"),
+            ),
         )
 
     async def _safe_analysis_tool(
@@ -707,8 +1014,15 @@ class FoodGuardMCPClient:
                 {"claim": "、".join(claims), "nutrition_data": nutrition},
             ),
         }
+        self.current_product = copy.deepcopy(product_data)
+        self.current_analysis = copy.deepcopy(task_results)
         overall_summary = await self.summarize_analysis(product_data, task_results)
         evidence_synthesis = _synthesize_payloads(list(task_results.values()), product_data)
+        all_sources = [
+            source
+            for payload in task_results.values()
+            for source in payload.get("sources", [])
+        ]
         return {
             "product_data": product_data,
             **task_results,
@@ -719,19 +1033,33 @@ class FoodGuardMCPClient:
                 "check_nutrition_label",
                 "check_nutrition_claim",
             ],
+            "diagnostics": self._diagnostics(
+                intent="product_analysis",
+                tool_calls=["check_allergens", "check_nutrition_label", "check_nutrition_claim"],
+                sources=all_sources,
+                answer_source="llm" if self._llm else "mixed",
+            ),
         }
 
     async def ask(self, user_message: str) -> ClientResponse:
-        if self._mcp is None:
+        if self._mcp is None and not self._local_tools:
             raise RuntimeError("MCP client is not connected.")
         if not user_message.strip():
             raise ValueError("user_message must not be empty")
 
+        self._last_llm_used = False
+        self._last_parsed_followup = None
+        previous_users = [
+            str(item.get("content", ""))
+            for item in self.history
+            if item.get("role") == "user" and item.get("content")
+        ]
+        self._last_previous_context = previous_users[-1] if previous_users else None
         self._add_context_message()
         # The small local model is slow and unreliable at deciding whether to
         # call a tool. Health questions can be routed deterministically first,
         # which both reduces latency and guarantees the disease guide is used.
-        if _fallback_intent(user_message) == "health_guidance":
+        if _fallback_intent(user_message) in {"health_guidance", "consumption"}:
             return await self._ask_without_llm(user_message)
         if self._llm is None:
             return await self._ask_without_llm(user_message)
@@ -752,10 +1080,19 @@ class FoodGuardMCPClient:
                     temperature=0,
                     max_tokens=500,
                 )
-            except Exception:
+            except Exception as exc:
                 # Expired keys, quota errors and unavailable local models all
                 # use the same deterministic intent router as no-LLM mode.
-                return await self._ask_without_llm(user_message, append_user=False)
+                response = await self._ask_without_llm(user_message, append_user=False)
+                diagnostics = dict(response.diagnostics or {})
+                diagnostics["fallback_reason"] = f"{type(exc).__name__}: {exc}"
+                return ClientResponse(
+                    answer=response.answer,
+                    sources=response.sources,
+                    tool_calls=response.tool_calls,
+                    evidence_synthesis=response.evidence_synthesis,
+                    diagnostics=diagnostics,
+                )
             message = completion.choices[0].message
             tool_calls = getattr(message, "tool_calls", None) or []
             if not tool_calls:
@@ -806,11 +1143,18 @@ class FoodGuardMCPClient:
                     )
                     continue
                 self.history.append({"role": "assistant", "content": assistant_text})
+                self._last_llm_used = bool(assistant_text)
                 return ClientResponse(
                     answer=_answer_with_sources(assistant_text, sources),
                     sources=sources,
                     tool_calls=called_tools,
                     evidence_synthesis=synthesize_evidence(sources),
+                    diagnostics=self._diagnostics(
+                        intent=_fallback_intent(user_message),
+                        tool_calls=called_tools,
+                        sources=sources,
+                        answer_source="llm" if assistant_text else "fallback",
+                    ),
                 )
 
             self.history.append(_message_to_dict(message))

@@ -60,14 +60,14 @@ def test_tools_report_missing_knowledge_base(monkeypatch) -> None:
     ]
 
     assert all(response["sources"] == [] for response in responses)
-    assert all(
-        response["result"]["status"] == "insufficient_evidence"
-        for response in responses
-    )
-    assert all(
-        response["result"]["message"] == mcp_server.NOT_ENOUGH_EVIDENCE
-        for response in responses
-    )
+    assert responses[0]["result"]["status"] == "insufficient_evidence"
+    assert responses[2]["result"]["status"] == "insufficient_evidence"
+    assert responses[3]["result"]["status"] == "insufficient_evidence"
+    # Ingredient detection remains useful even when regulation retrieval is
+    # unavailable; the two statuses are intentionally independent.
+    assert responses[1]["result"]["status"] == "warning"
+    assert responses[1]["result"]["detection_status"] == "detected"
+    assert responses[1]["result"]["regulation_evidence_status"] == "insufficient"
 
 
 def test_empty_claim_is_not_applicable_and_skips_rag(monkeypatch) -> None:
@@ -80,3 +80,19 @@ def test_empty_claim_is_not_applicable_and_skips_rag(monkeypatch) -> None:
     assert response["sources"] == []
     assert response["result"]["status"] == "not_applicable"
     assert response["debug_evidence"]["skipped"] == "claim_not_provided"
+
+
+def test_consumption_calculator_is_deterministic() -> None:
+    response = mcp_server.calculate_consumption_nutrients(
+        {
+            "raw_text": "每一份量 100 毫升\n糖 4 公克",
+            "values": {"sugar_g": 4},
+            "provided_fields": ["糖"],
+            "serving_size": "100 毫升",
+        },
+        2000,
+        "ml",
+    )
+
+    assert response["result"]["status"] == "calculated"
+    assert response["result"]["scaled_values"]["sugar_g"] == 80

@@ -25,7 +25,7 @@ FoodGuard/
 ├─ data/                   # FAISS index 與本地產物
 ├─ documents/              # 官方法規資料來源
 ├─ docs/                   # 需求與架構設計文件
-├─ mcp/                    # MCP 相關保留目錄
+├─ mcp_runtime/            # MCP 相關保留目錄（避免遮蔽官方 mcp 套件）
 ├─ tests/                  # 自動化與 stdio smoke tests
 ├─ .env.example
 ├─ .gitignore
@@ -66,6 +66,8 @@ Copy-Item .env.example .env
 ```powershell
 py build_index.py
 ```
+
+Streamlit 首次載入不會同步建立 embedding index，以避免頁面停在錯誤畫面；沒有 FAISS index 時會使用本地關鍵字 fallback。若部署環境已快取 embedding model，可在 `.env` 設定 `FOODGUARD_AUTO_BUILD_INDEX=1`。
 
 索引會寫入 `data/vector_store/`，包含 FAISS index、chunk metadata 與 embedding 設定。也可指定路徑或模型：
 
@@ -125,7 +127,9 @@ Copy-Item .env.example .env
 streamlit run app.py
 ```
 
-產品名稱為「食標通 LabelCheck」，正式專題名稱為「基於 MCP 與 RAG 的食品標示智慧判讀系統」。首頁提供品名、成分、營養標示及營養宣稱輸入。按下「開始判讀」後，UI 會使用既有 `FoodGuardMCPClient` 呼叫三個分析 tools，並顯示過敏原辨識、營養標示完整性、營養宣稱查核與法規依據。下方的食品與規範問答會保留同一個 Streamlit session 的 conversation history。
+產品名稱為「食標通 LabelCheck」，正式專題名稱為「基於 MCP 與 RAG 的食品標示智慧判讀系統」。首頁提供品名、成分、營養標示及營養宣稱輸入。按下「開始判讀」後，UI 會使用 `FoodGuardMCPClient` 透過 stdio MCP 呼叫三個分析 tools，並顯示過敏原辨識、營養標示完整性、營養宣稱查核與法規依據。下方的食品與規範問答會保留 conversation history，並以 SQLite 保存產品、分析結果與對話。
+
+營養宣稱門檻存放於 `data/nutrition_claim_rules.json`，由 deterministic rule engine 讀取；「2000 ml」這類追問會解析為明確消費量並呼叫 `calculate_consumption_nutrients` 換算。疾病飲食問題會使用 `search_disease_guideline`，不會把疾病指引誤當成個人醫療上限。開發者資訊會顯示實際 provider、model、LLM 是否使用、intent、MCP tools、RAG domain、evidence count 與 fallback reason，不顯示 chain-of-thought。
 
 法規來源以展開區呈現文件名稱、頁碼、檢索文字與相關度；未取得 RAG 證據時顯示「目前知識庫找不到足夠依據」，不顯示猜測性的符合或不符合結論。
 

@@ -9,18 +9,26 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import os
 from pathlib import Path
 from typing import Any, Coroutine
 
 import streamlit as st
 
 from foodguard import parse_product_data
+from foodguard.memory import load_session, new_session_id, save_session
 from mcp_client import ClientResponse, FoodGuardMCPClient, SYSTEM_PROMPT
 
 
 @st.cache_resource(show_spinner="正在準備法規資料…")
 def _ensure_vector_store() -> str | None:
-    """Build the ignored local index automatically on a fresh cloud instance."""
+    """Check the local index without blocking the first Streamlit render.
+
+    Building embeddings can take minutes and can fail when the embedding model
+    is not cached.  The MCP server has an explicit keyword-search fallback, so
+    the UI should remain usable and let operators build the FAISS index
+    separately (or opt in with FOODGUARD_AUTO_BUILD_INDEX=1).
+    """
 
     from rag.config import documents_dir, vector_store_dir
 
@@ -28,6 +36,12 @@ def _ensure_vector_store() -> str | None:
     required_files = ("index.faiss", "metadata.json", "config.json")
     if destination.exists() and all((destination / name).exists() for name in required_files):
         return None
+
+    auto_build = os.getenv("FOODGUARD_AUTO_BUILD_INDEX", "0").strip().lower() in {
+        "1", "true", "yes"
+    }
+    if not auto_build:
+        return "法規向量索引尚未建立；目前先使用本地關鍵字 fallback。需要時請執行 py build_index.py。"
 
     try:
         from build_index import build_index
@@ -316,19 +330,31 @@ def _render_sources(
 
 
 def _render_debug(
-    payloads: dict[str, dict[str, Any]], tool_calls: list[str] | None = None
+    payloads: dict[str, dict[str, Any]],
+    tool_calls: list[str] | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> None:
     with st.expander("開發者資訊", expanded=False):
         st.caption("此區僅供開發除錯；原始 chunk、檢索分數與 MCP 回應不會顯示在一般回答中。")
         if tool_calls:
             st.markdown("**MCP 工具呼叫**")
             st.write(" → ".join(tool_calls))
+        if diagnostics:
+            st.markdown("**Pipeline diagnostics**")
+            st.json(diagnostics)
         for name, payload in payloads.items():
             st.markdown(f"**{name}**")
             debug = payload.get("debug_evidence", {})
             if debug:
                 st.json(debug)
-            st.json(payload)
+            st.json({
+                "result": payload.get("result", {}),
+                "sources": [
+                    {key: source.get(key) for key in ("document", "page", "score", "knowledge_domain")}
+                    for source in payload.get("sources", [])
+                    if isinstance(source, dict)
+                ],
+            })
 
 
 def _render_result_card(
@@ -336,6 +362,9 @@ def _render_result_card(
 ) -> None:
     result = payload.get("result", {})
     status_text, status_class = _status(payload)
+    if result.get("detection_status") == "detected":
+        detected_count = len(result.get("detected_allergens", []))
+        status_text, status_class = f"⚠️ 已辨識到 {detected_count} 類潛在過敏原", "warn"
     sources = payload.get("sources", [])
     with st.container(border=True):
         st.markdown(
@@ -350,6 +379,13 @@ def _render_result_card(
             f'<div class="result-detail">{result.get("summary", "目前找不到足夠依據")}</div>',
             unsafe_allow_html=True,
         )
+        if result.get("detection_status") == "detected":
+            evidence_status = result.get("regulation_evidence_status")
+            evidence_message = result.get(
+                "regulation_evidence_message", "目前知識庫缺少足夠的相關規範來源。"
+            )
+            if evidence_status == "insufficient":
+                st.info(f"法規依據：{evidence_message}")
         for detail in details:
             st.markdown(f'<div class="finding">{detail}</div>', unsafe_allow_html=True)
         recommendations = result.get("recommendations", [])
@@ -394,14 +430,52 @@ def _claim_details(result: dict[str, Any]) -> list[str]:
 
 
 def _initialise_state() -> None:
+    if "session_id" not in st.session_state:
+        session_id = None
+        try:
+            session_id = st.query_params.get("session_id")
+        except Exception:
+            pass
+        st.session_state.session_id = session_id or new_session_id()
+        try:
+            st.query_params["session_id"] = st.session_state.session_id
+        except Exception:
+            pass
+        saved = load_session(st.session_state.session_id)
+    else:
+        saved = None
     if "analysis" not in st.session_state:
-        st.session_state.analysis = None
+        st.session_state.analysis = (saved or {}).get("analysis_results") or None
+    if "current_product" not in st.session_state:
+        st.session_state.current_product = copy.deepcopy(
+            (st.session_state.analysis or {}).get("product_data")
+        )
+    if "consumption_context" not in st.session_state:
+        st.session_state.consumption_context = copy.deepcopy(
+            (st.session_state.analysis or {}).get("consumption_context")
+        )
     if "analysis_product_name" not in st.session_state:
-        st.session_state.analysis_product_name = ""
+        st.session_state.analysis_product_name = str(
+            ((saved or {}).get("product_profile") or {}).get("product_name") or ""
+        )
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.chat_history = (saved or {}).get("conversation_history") or [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
     if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
+        st.session_state.chat_messages = [
+            message for message in st.session_state.chat_history
+            if message.get("role") in {"user", "assistant"} and message.get("content")
+        ]
+
+
+def _persist_state() -> None:
+    save_session(
+        st.session_state.session_id,
+        product_profile=(st.session_state.analysis or {}).get("product_data", {}),
+        analysis_results=st.session_state.analysis or {},
+        conversation_history=st.session_state.chat_history,
+    )
 
 
 def _render_product_view() -> None:
@@ -449,12 +523,15 @@ def _render_product_view() -> None:
                 try:
                     st.session_state.analysis = _run_async(_run_analysis(product_data))
                     st.session_state.analysis_product_name = product_data["product_name"]
+                    st.session_state.current_product = copy.deepcopy(product_data)
+                    st.session_state.consumption_context = None
                     # A new product starts a new conversation context so that
                     # follow-up questions cannot accidentally use old data.
                     st.session_state.chat_history = [
                         {"role": "system", "content": SYSTEM_PROMPT}
                     ]
                     st.session_state.chat_messages = []
+                    _persist_state()
                 except Exception as exc:
                     st.session_state.analysis = None
                     st.error("分析暫時無法完成，請重新按下「開始判讀」。")
@@ -486,6 +563,7 @@ def _render_product_view() -> None:
     _render_debug(
         {key: analysis[key] for key, _label, _builder in task_labels},
         analysis.get("tool_calls", []),
+        analysis.get("diagnostics"),
     )
 
 
@@ -525,9 +603,26 @@ def _render_chat_section() -> None:
                         )
                     )
                     st.session_state.chat_history = history
+                    if response.diagnostics:
+                        st.session_state.last_chat_diagnostics = response.diagnostics
+                        consumption = response.diagnostics.get("consumption_context")
+                        if consumption and st.session_state.analysis:
+                            st.session_state.consumption_context = copy.deepcopy(consumption)
+                            st.session_state.analysis["consumption_context"] = copy.deepcopy(
+                                consumption
+                            )
+                            product_data = st.session_state.analysis.get("product_data")
+                            if isinstance(product_data, dict):
+                                product_data["consumption_context"] = copy.deepcopy(consumption)
+                    _persist_state()
                     st.markdown(response.answer)
                     if response.sources:
                         _render_sources(response.sources, "chat-sources")
+                    _render_debug(
+                        {},
+                        response.tool_calls,
+                        response.diagnostics,
+                    )
                     st.session_state.chat_messages.append(
                         {"role": "assistant", "content": response.answer}
                     )
@@ -543,9 +638,9 @@ def main() -> None:
     )
     _initialise_state()
     _inject_styles()
-    index_status = _ensure_vector_store()
-    if index_status and index_status.startswith("法規資料尚未"):
-        st.warning(index_status)
+    # Index readiness is an internal implementation detail.  When the FAISS
+    # index is absent, the MCP/RAG layer silently uses keyword fallback.
+    _ensure_vector_store()
     cover_url = _cover_data_url()
     cover_attribute = (
         " style=\"background-image: linear-gradient(90deg, rgba(8, 42, 40, .88) 0%, "
