@@ -285,6 +285,7 @@ def _structured_fallback_answer(
     intent: str,
     question: str,
     payload: dict[str, Any],
+    product: dict[str, Any] | None = None,
 ) -> str:
     result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
     if intent == "allergen":
@@ -321,11 +322,54 @@ def _structured_fallback_answer(
                 ),
                 "目前疾病",
             )
+            product = product or {}
+            product_name = str(product.get("product_name") or "").strip()
+            nutrition = product.get("nutrition", {})
+            nutrition = nutrition if isinstance(nutrition, dict) else {}
+            values = nutrition.get("values", {})
+            values = values if isinstance(values, dict) else {}
+            value_labels = (
+                ("糖", "sugar_g"),
+                ("碳水化合物", "carbohydrate_g"),
+                ("份量", "serving_size"),
+            )
+            provided = []
+            for label, field in value_labels:
+                value = nutrition.get(field) if field == "serving_size" else values.get(field)
+                if value not in (None, ""):
+                    unit = "" if field == "serving_size" else " g"
+                    provided.append(f"{label} {value}{unit}")
+            missing = [
+                label
+                for label, field in value_labels
+                if (nutrition.get(field) if field == "serving_size" else values.get(field)) in (None, "")
+            ]
+            ingredients = "、".join(str(item) for item in product.get("ingredients", []))
+            sugar_terms = ("砂糖", "蔗糖", "葡萄糖", "果糖", "糖漿", "蜂蜜", "麥芽糊精")
+            ingredient_note = (
+                "成分文字中出現糖類相關原料，需一併看每份糖與碳水化合物。"
+                if any(term in ingredients for term in sugar_terms)
+                else "目前成分文字未足以判定其糖分影響。"
+            )
+            if not product_name:
+                return (
+                    f"已找到與{disease}相關的官方飲食資料，但目前沒有可比對的產品。"
+                    "\n- 請先填入產品名稱、成分、每份份量、糖與碳水化合物。"
+                    "\n- 疾病資料能提供飲食注意事項，不能單獨把所有飲品判定為可以或不可以。"
+                )
+            if missing:
+                return (
+                    f"針對目前產品「{product_name}」，已找到與{disease}相關的官方飲食資料，"
+                    f"但目前缺少：{'、'.join(missing)}，所以還不能可靠判定是否適合飲用。"
+                    f"\n- 已提供：{'、'.join(provided) if provided else '尚未提供糖尿病判斷所需的營養資料'}。"
+                    f"\n- {ingredient_note}"
+                    "\n- 請補齊標示資料，並依個人用藥與醫囑決定份量；這不取代醫療診斷。"
+                )
             return (
-                f"目前已找到與{disease}相關的官方飲食資料，但「{question}」還缺少具體食品或飲品，"
-                "因此不能直接判定可以或不可以。"
-                "\n- 請提供食品名稱、成分，以及每份的糖、碳水化合物與份量。"
-                "\n- 我可以依資料中的飲食注意事項，協助比對這個具體食品；這不取代醫療診斷。"
+                f"針對目前產品「{product_name}」，目前輸入的每份資料為：{'、'.join(provided)}。"
+                f"\n- {ingredient_note}"
+                f"\n- 官方{disease}資料可用來提供飲食注意事項，但沒有一個適用所有人的單一「可以喝／不能喝」判定。"
+                "\n- 是否適合仍要配合飲用份量、整餐碳水化合物、用藥與個人醫囑；不能只用產品名稱下結論。"
             )
         return f"目前可查到與問題相關的官方資料主題：{topics}。請把問題縮小到特定標示、成分或營養宣稱。"
     return NOT_ENOUGH_EVIDENCE
@@ -607,7 +651,9 @@ class FoodGuardMCPClient:
                     "result": {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE},
                     "sources": [],
                 }
-            answer = _structured_fallback_answer(intent, contextual_query, payload)
+            answer = _structured_fallback_answer(
+                intent, contextual_query, payload, product=product
+            )
 
         answer = _answer_with_sources(answer, sources)
         self.history.append({"role": "assistant", "content": answer})
