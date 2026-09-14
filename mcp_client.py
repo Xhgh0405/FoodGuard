@@ -69,15 +69,29 @@ class ClientResponse:
     evidence_synthesis: dict[str, Any] | None = None
 
 
+def _get_setting(name: str, default: str = "") -> str:
+    """Read settings from local environment first, then Streamlit Secrets."""
+
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        return str(st.secrets.get(name, default)).strip()
+    except Exception:
+        return default
+
+
 def _load_settings(require_key: bool = True) -> tuple[str, str, str | None]:
     load_dotenv(PROJECT_ROOT / ".env")
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = _get_setting("OPENAI_API_KEY")
     if require_key and (not api_key or api_key == "your_openai_api_key_here"):
         raise RuntimeError(
             "OPENAI_API_KEY is missing. Copy .env.example to .env and set the real API key."
         )
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+    model = _get_setting("OPENAI_MODEL", "gpt-4o-mini")
+    base_url = _get_setting("OPENAI_BASE_URL") or None
     return api_key, model, base_url
 
 
@@ -401,7 +415,7 @@ class FoodGuardMCPClient:
         self.current_analysis: dict[str, Any] | None = None
         if self._llm is None and api_key:
             try:
-                timeout = float(os.getenv("OPENAI_TIMEOUT", "20"))
+                timeout = float(_get_setting("OPENAI_TIMEOUT", "20"))
             except ValueError:
                 timeout = 20.0
             self._llm = AsyncOpenAI(
