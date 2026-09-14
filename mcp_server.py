@@ -137,6 +137,14 @@ def search_food_regulation(query: str) -> dict[str, Any]:
     extra_queries: tuple[str, ...] = ()
     if any(term in query for term in ("食品法", "食品法規", "食品法律", "食品標示規定有哪些")):
         extra_queries = ("食品安全衛生管理法 食品標示 食品宣傳 廣告",)
+    elif any(term in query for term in ("糖尿病", "高血壓", "腎臟病", "腎病", "高血脂", "血脂")):
+        # Short questions often contain only a disease and「可以嗎」. Search
+        # the matching official guide explicitly instead of relying on one
+        # generic embedding query.
+        extra_queries = (
+            f"{query} 飲食 注意事項",
+            "糖尿病與我 飲食 飲品 碳水化合物" if "糖尿病" in query else f"{query} 飲食指引",
+        )
     sources, debug = _retrieve_regulation(
         query, top_k=5, extra_queries=extra_queries
     )

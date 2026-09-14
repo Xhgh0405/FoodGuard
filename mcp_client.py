@@ -313,9 +313,19 @@ def _structured_fallback_answer(
                 titles.append(title)
         topics = "、".join(titles[:4])
         if intent == "health_guidance":
+            disease = next(
+                (
+                    term
+                    for term in ("糖尿病", "高血壓", "腎臟病", "高血脂")
+                    if term in question
+                ),
+                "目前疾病",
+            )
             return (
-                "目前找到相關官方資料，但現有結構化規則不足以直接產生個人飲食上限。"
-                "請提供目前食品的每份營養數值與要注意的疾病項目。"
+                f"目前已找到與{disease}相關的官方飲食資料，但「{question}」還缺少具體食品或飲品，"
+                "因此不能直接判定可以或不可以。"
+                "\n- 請提供食品名稱、成分，以及每份的糖、碳水化合物與份量。"
+                "\n- 我可以依資料中的飲食注意事項，協助比對這個具體食品；這不取代醫療診斷。"
             )
         return f"目前可查到與問題相關的官方資料主題：{topics}。請把問題縮小到特定標示、成分或營養宣稱。"
     return NOT_ENOUGH_EVIDENCE
@@ -672,6 +682,11 @@ class FoodGuardMCPClient:
             raise ValueError("user_message must not be empty")
 
         self._add_context_message()
+        # The small local model is slow and unreliable at deciding whether to
+        # call a tool. Health questions can be routed deterministically first,
+        # which both reduces latency and guarantees the disease guide is used.
+        if _fallback_intent(user_message) == "health_guidance":
+            return await self._ask_without_llm(user_message)
         if self._llm is None:
             return await self._ask_without_llm(user_message)
 
