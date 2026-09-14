@@ -763,6 +763,7 @@ class FoodGuardMCPClient:
             result["health_risk_intent"] = True
             result["risk_topic"] = [item.get("topic") for item in health_result.get("risk_topics", [])]
             result["hazard_classification"] = health_result.get("hazard_classifications", [])
+            result["evidence_category"] = health_result.get("evidence_category")
             result["exposure_context"] = dict(self.exposure_context)
             result["health_risk_sources"] = health_result.get("source_organizations", [])
         else:

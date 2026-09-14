@@ -269,6 +269,7 @@ def search_health_risk(
             "agent": topic.get("agent"),
             "iarc_group": topic.get("iarc_group"),
             "classification_label": topic.get("classification_label"),
+            "evidence_category": topic.get("evidence_category"),
         }
         for topic in result.get("risk_topics", [])
     ]

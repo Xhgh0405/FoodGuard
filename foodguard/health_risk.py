@@ -59,6 +59,15 @@ def _detection_status(topic: str, text: str, product: dict[str, Any] | None) -> 
     return "possible"
 
 
+def _evidence_category(item: dict[str, Any]) -> str:
+    group = item.get("iarc_group")
+    if group == "1":
+        return "A"
+    if group in {"2A", "2B"}:
+        return "B"
+    return "C"
+
+
 def has_health_risk_signal(product: dict[str, Any] | None) -> bool:
     text = _product_text(product)
     return any(
@@ -84,6 +93,7 @@ def detect_health_risk_topics(
         item = deepcopy(knowledge)
         item["matched_signals"] = matched
         item["detection_status"] = _detection_status(item["topic"], combined, product)
+        item["evidence_category"] = _evidence_category(item)
         item["product_signal"] = bool(product_text and any(
             alias.casefold() in product_text.casefold() for alias in aliases
         ))
@@ -98,6 +108,7 @@ def detect_health_risk_topics(
         "status": "evidence_found" if topics else "insufficient_evidence",
         "health_risk_intent": True,
         "detection_status": "detected" if topics else "not_enough_evidence",
+        "evidence_category": "A/B/C" if topics else "D",
         "risk_topics": topics,
         "exposure_context": deepcopy(exposure_context or {}),
         "current_product_used": bool(product),
