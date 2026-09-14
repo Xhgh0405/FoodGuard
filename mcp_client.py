@@ -517,6 +517,62 @@ def _answer_with_sources(answer: str, sources: list[dict[str, Any]]) -> str:
     return answer
 
 
+FOLLOWUP_SYNTHESIS_PROMPT = """你是 FoodGuard 的回答整理器。
+只能使用輸入中的產品資料、消費量計算結果與官方指引摘要；不要創造門檻、醫療診斷或個人每日上限。
+回答台灣繁體中文，先講與目前產品直接相關的結論，再列出 2 至 4 個重點。
+若資料不足，要指出缺少哪個欄位；若有計算結果，必須保留數值與單位。
+不要輸出原始 chunk、相似度、chain-of-thought 或「資料來源」段落。
+"""
+
+
+async def _llm_followup_answer(
+    llm: Any,
+    model: str,
+    question: str,
+    intent: str,
+    product: dict[str, Any],
+    payload: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> str | None:
+    """Ask the configured model to phrase already-verified follow-up facts."""
+
+    disease_payload = payload.get("disease_result")
+    evidence_payloads = [payload]
+    if isinstance(disease_payload, dict):
+        evidence_payloads.append(disease_payload)
+    prompt = {
+        "intent": intent,
+        "new_user_message": question,
+        "current_product": product,
+        "relevant_tool_results": {
+            "calculation": payload.get("result", {}),
+            "disease_guideline": (
+                disease_payload.get("result", {})
+                if isinstance(disease_payload, dict)
+                else None
+            ),
+        },
+        "evidence_summary": _synthesize_payloads(evidence_payloads, product),
+        "recent_conversation_history": [
+            item for item in history[-8:] if item.get("role") in {"user", "assistant"}
+        ],
+    }
+    try:
+        completion = await llm.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": FOLLOWUP_SYNTHESIS_PROMPT},
+                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+            ],
+            temperature=0,
+            max_tokens=280,
+        )
+        answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
+        return answer or None
+    except Exception:
+        return None
+
+
 def _sanitize_answer(answer: str, sources: list[dict[str, Any]]) -> str:
     """Prevent an accidental verbatim long-chunk echo in the public answer."""
 
@@ -956,7 +1012,27 @@ class FoodGuardMCPClient:
                 intent, contextual_query, payload, product=product
             )
 
-        answer = _answer_with_sources(answer, sources)
+        answer_source = "rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback")
+        if intent in {"health_guidance", "consumption"} and self._llm is not None:
+            generated = await _llm_followup_answer(
+                self._llm,
+                self.model,
+                user_message,
+                intent,
+                product,
+                payload,
+                self.history,
+            )
+            if generated:
+                answer = generated
+                self._last_llm_used = True
+                answer_source = "llm"
+        if intent == "consumption" and payload.get("result", {}).get("status") == "calculated":
+            # The calculation is a deterministic product-label operation and
+            # does not require a RAG source; only sanitize any model wording.
+            answer = _sanitize_answer(answer, sources) or NOT_ENOUGH_EVIDENCE
+        else:
+            answer = _answer_with_sources(answer, sources)
         self.history.append({"role": "assistant", "content": answer})
         return ClientResponse(
             answer=answer,
@@ -967,7 +1043,7 @@ class FoodGuardMCPClient:
                 intent=intent,
                 tool_calls=called_tools,
                 sources=sources,
-                answer_source="rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback"),
+                answer_source=answer_source,
             ),
         )
 
