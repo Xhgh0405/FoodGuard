@@ -21,6 +21,7 @@ async def main() -> None:
     # FoodGuardMCPClient uses official MCP stdio where Windows permits it and
     # the same registered tools in-process when the host rejects named pipes.
     async with FoodGuardMCPClient(require_api_key=False) as client:
+        client._llm = None
         names = set(client.tool_names)
         expected = {
             "search_food_regulation",
@@ -29,6 +30,7 @@ async def main() -> None:
             "check_nutrition_claim",
             "search_disease_guideline",
             "calculate_consumption_nutrients",
+            "search_health_risk",
         }
         assert names >= expected, f"Missing tools: {expected - names}"
 
@@ -56,6 +58,14 @@ async def main() -> None:
             (
                 "search_disease_guideline",
                 {"disease": "糖尿病", "query": "飲料要注意什麼？"},
+            ),
+            (
+                "search_health_risk",
+                {
+                    "question": "這個有致癌風險嗎？",
+                    "product_context": {"product_name": "香腸", "ingredients": ["豬肉", "亞硝酸鈉"]},
+                    "exposure_context": {},
+                },
             ),
         ]
         for name, arguments in calls:

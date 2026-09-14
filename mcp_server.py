@@ -13,6 +13,10 @@ from mcp.server import MCPServer
 
 from foodguard.evidence import retrieve_evidence
 from foodguard.context import calculate_consumption_nutrients as calculate_scaled_nutrients
+from foodguard.health_risk import (
+    detect_health_risk_topics,
+    health_risk_sources,
+)
 from foodguard.parsing import parse_claims, parse_ingredients, parse_nutrition
 from foodguard.rules import (
     analyse_allergens,
@@ -234,6 +238,48 @@ def search_disease_guideline(
     if not sources:
         result["message"] = NOT_ENOUGH_EVIDENCE
     return _response(result, sources, debug)
+
+
+@mcp.tool(
+    name="search_health_risk",
+    description=(
+        "Search structured official health-risk evidence for carcinogenic hazards, "
+        "food contaminants, additives, and high-temperature processing. Separate hazard "
+        "classification from personal exposure risk; never estimate cancer probability."
+    ),
+)
+def search_health_risk(
+    question: str,
+    product_context: dict[str, Any] | None = None,
+    exposure_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = detect_health_risk_topics(question, product_context, exposure_context)
+    sources = health_risk_sources(result)
+    result["regulation_evidence_status"] = "sufficient" if sources else "insufficient"
+    result["source_organizations"] = sorted(
+        {
+            organization
+            for topic in result.get("risk_topics", [])
+            for organization in topic.get("source_organizations", [])
+        }
+    )
+    result["hazard_classifications"] = [
+        {
+            "topic": topic.get("topic"),
+            "agent": topic.get("agent"),
+            "iarc_group": topic.get("iarc_group"),
+            "classification_label": topic.get("classification_label"),
+        }
+        for topic in result.get("risk_topics", [])
+    ]
+    return _response(
+        result,
+        sources,
+        {
+            "knowledge_base": "data/health_risk_knowledge.json",
+            "retrieval_mode": "structured_official_sources",
+        },
+    )
 
 
 @mcp.tool(

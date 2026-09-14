@@ -325,6 +325,8 @@ def _render_sources(
             st.caption(f"第 {source.get('page', '—')} 頁")
             excerpt = source.get("relevant_excerpt", source.get("text", ""))
             st.markdown(f"**相關內容：** {_source_excerpt(excerpt)}")
+            if source.get("source_url"):
+                st.markdown(f"[開啟官方來源]({source['source_url']})")
             if index < min(len(sources), max_sources):
                 st.divider()
 
@@ -350,7 +352,10 @@ def _render_debug(
             st.json({
                 "result": payload.get("result", {}),
                 "sources": [
-                    {key: source.get(key) for key in ("document", "page", "score", "knowledge_domain")}
+                        {
+                            key: source.get(key)
+                            for key in ("document", "page", "score", "knowledge_domain", "source_url", "topic")
+                        }
                     for source in payload.get("sources", [])
                     if isinstance(source, dict)
                 ],
@@ -427,6 +432,22 @@ def _claim_details(result: dict[str, Any]) -> list[str]:
         basis = evaluation.get("basis", "來源基準")
         return [f"{basis}：輸入值 {actual:g}，來源條件 {evaluation.get('comparison')} {threshold:g}。"]
     return [f"宣稱：{result.get('claim') or '未提供'}"]
+
+
+def _health_risk_details(result: dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    for topic in result.get("risk_topics", []):
+        classification = topic.get("classification_label") or "不同化合物分類可能不同"
+        status = topic.get("detection_status", "possible")
+        status_label = {
+            "detected": "產品或問題中有明確訊號",
+            "possible": "只有食品／製程脈絡，尚未證明實際含有",
+        }.get(status, "資料不足")
+        details.append(
+            f"<strong>{topic.get('agent', topic.get('topic'))}</strong><br>"
+            f"{classification}<br>判讀狀態：{status_label}"
+        )
+    return details or ["目前沒有足夠產品或成分資料對應到特定健康風險主題。"]
 
 
 def _initialise_state() -> None:
@@ -559,9 +580,19 @@ def _render_product_view() -> None:
         _render_result_card(
             payload, detail_builder(payload.get("result", {})), key, _label
         )
+    if analysis.get("health_risk"):
+        _render_result_card(
+            analysis["health_risk"],
+            _health_risk_details(analysis["health_risk"].get("result", {})),
+            "health-risk",
+            "其他健康風險資訊",
+        )
 
     _render_debug(
-        {key: analysis[key] for key, _label, _builder in task_labels},
+        {
+            **{key: analysis[key] for key, _label, _builder in task_labels},
+            **({"health_risk": analysis["health_risk"]} if analysis.get("health_risk") else {}),
+        },
         analysis.get("tool_calls", []),
         analysis.get("diagnostics"),
     )

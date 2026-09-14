@@ -23,7 +23,8 @@ from mcp.client.stdio import StdioServerParameters
 from openai import AsyncOpenAI
 
 from foodguard.synthesis import NOT_ENOUGH_EVIDENCE, synthesize_evidence
-from foodguard.context import parse_consumption_amount
+from foodguard.context import parse_consumption_amount, parse_exposure_context
+from foodguard.health_risk import has_health_risk_signal
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -95,6 +96,18 @@ _LOCAL_TOOL_SCHEMAS: dict[str, tuple[str, dict[str, Any]]] = {
                 "product_context": {"type": "object"},
             },
             "required": ["disease"],
+        },
+    ),
+    "search_health_risk": (
+        "Search structured official health-risk evidence and separate hazard from exposure risk.",
+        {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "product_context": {"type": "object"},
+                "exposure_context": {"type": "object"},
+            },
+            "required": ["question"],
         },
     ),
     "calculate_consumption_nutrients": (
@@ -283,6 +296,15 @@ def _fallback_intent(message: str) -> str:
     compact = re.sub(r"\s+", "", message)
     if parse_consumption_amount(message):
         return "consumption"
+    if any(
+        term in compact
+        for term in (
+            "致癌", "癌症", "癌", "健康風險", "風險", "安全嗎", "長期吃", "添加物安全", "污染物",
+            "加工肉", "阿斯巴甜", "黃麴毒素", "丙烯醯胺", "亞硝酸鹽", "亞硝胺",
+            "燒焦", "焦黑", "燒烤", "煙燻", "醃製",
+        )
+    ):
+        return "health_risk"
     if any(term in compact for term in ("一天", "每日", "一天最多", "幾個", "幾份", "可以吃多少")):
         return "intake"
     if any(term in compact for term in ("過敏", "過敏原", "奶類", "乳類", "雞蛋", "蛋類")):
@@ -356,6 +378,47 @@ def _allergen_answer(question: str, result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _health_risk_answer(result: dict[str, Any], product: dict[str, Any] | None = None) -> str:
+    topics = [item for item in result.get("risk_topics", []) if isinstance(item, dict)]
+    product_name = str((product or {}).get("product_name") or "目前食品")
+    exposure = result.get("exposure_context") or {}
+    if not topics:
+        return (
+            f"目前沒有足夠資料把「{product_name}」對應到特定健康風險主題。\n"
+            "- 這不等於已證明安全，也不代表一定有致癌物。\n"
+            "- 請提供具體成分、食品類型、加工方式或檢驗資料，才能查詢官方評估。"
+        )
+
+    lines = ["【目前判讀】"]
+    for topic in topics:
+        classification = topic.get("classification_label") or "目前沒有單一 IARC 分類"
+        lines.append(
+            f"- {topic.get('agent', topic.get('topic'))}：{classification}。"
+            "這是 hazard（是否具有造成危害的證據）分類，不是吃一次就會罹癌的個人 risk。"
+        )
+    lines.append("\n【為什麼】")
+    for topic in topics[:3]:
+        lines.append(f"- {topic.get('evidence_summary', '')}")
+    lines.append("\n【目前產品資料】")
+    for topic in topics[:4]:
+        status = topic.get("detection_status", "possible")
+        label = {"detected": "產品／問題中有明確訊號", "possible": "只有食品或製程脈絡，尚未證明實際含有", "not_enough_evidence": "資料不足"}.get(status, status)
+        lines.append(f"- {topic.get('topic')}: {label}")
+    known_exposure = [
+        f"份量 {exposure.get('amount')} {exposure.get('unit')}"
+        if exposure.get("amount") is not None and exposure.get("unit") else None,
+        f"頻率 {exposure.get('frequency')}" if exposure.get("frequency") else None,
+        f"期間 {exposure.get('duration')}" if exposure.get("duration") else None,
+        f"料理方式 {exposure.get('preparation_method')}" if exposure.get("preparation_method") else None,
+    ]
+    lines.append("- 暴露資訊：" + ("、".join(item for item in known_exposure if item) if any(known_exposure) else "目前未提供份量、頻率或期間"))
+    lines.append("\n【限制】")
+    lines.append("- 目前只能說明官方 hazard 證據與可能暴露脈絡，不能依這些資料估算你的個人罹癌機率。")
+    if not exposure.get("frequency") or not exposure.get("duration"):
+        lines.append("- 若要進一步討論實際風險，仍需補充食用頻率與持續期間；沒有被 IARC 分類也不等於已證明安全。")
+    return "\n".join(lines)
+
+
 def _structured_fallback_answer(
     intent: str,
     question: str,
@@ -390,6 +453,8 @@ def _structured_fallback_answer(
         return "\n".join(lines)
     if intent == "allergen":
         return _allergen_answer(question, result)
+    if intent == "health_risk":
+        return _health_risk_answer(result, product)
     if intent == "nutrition_label":
         missing = "、".join(str(item) for item in result.get("missing_fields", []))
         answer = str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
@@ -597,6 +662,9 @@ def _deterministic_analysis_summary(
     lines.append(f"- {allergen.get('summary', NOT_ENOUGH_EVIDENCE)}")
     lines.append(f"- {nutrition.get('summary', NOT_ENOUGH_EVIDENCE)}")
     lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
+    health_risk = task_results.get("health_risk", {}).get("result", {})
+    if health_risk:
+        lines.append(f"- 健康風險：{health_risk.get('summary', NOT_ENOUGH_EVIDENCE)}")
     return "\n".join(lines)
 
 
@@ -638,6 +706,14 @@ class FoodGuardMCPClient:
         self._last_llm_used = False
         self._last_parsed_followup: dict[str, Any] | None = None
         self._last_previous_context: str | None = None
+        self.exposure_context: dict[str, Any] = {
+            "amount": None,
+            "unit": None,
+            "frequency": None,
+            "duration": None,
+            "preparation_method": None,
+        }
+        self._last_health_risk_result: dict[str, Any] | None = None
         if self._llm is None and api_key:
             try:
                 timeout = float(_get_setting("OPENAI_TIMEOUT", "20"))
@@ -682,6 +758,15 @@ class FoodGuardMCPClient:
             result["previous_context"] = self._last_previous_context
         if self.consumption_context:
             result["consumption_context"] = dict(self.consumption_context)
+        health_result = self._last_health_risk_result or {}
+        if health_result:
+            result["health_risk_intent"] = True
+            result["risk_topic"] = [item.get("topic") for item in health_result.get("risk_topics", [])]
+            result["hazard_classification"] = health_result.get("hazard_classifications", [])
+            result["exposure_context"] = dict(self.exposure_context)
+            result["health_risk_sources"] = health_result.get("source_organizations", [])
+        else:
+            result["health_risk_intent"] = intent == "health_risk"
         if fallback_reason:
             result["fallback_reason"] = fallback_reason
         return result
@@ -713,11 +798,19 @@ class FoodGuardMCPClient:
                         self.current_product[target_key] = copy.deepcopy(
                             payload.get("result", payload)
                         )
+                health_payload = self.current_analysis.get("health_risk")
+                if isinstance(health_payload, dict):
+                    self.current_product["health_context_analysis"] = copy.deepcopy(
+                        health_payload.get("result", health_payload)
+                    )
                 for key in ("health_context_analysis", "consumption_context"):
                     if key in self.current_analysis:
                         self.current_product[key] = copy.deepcopy(self.current_analysis[key])
             context = self.current_product.get("consumption_context")
             self.consumption_context = copy.deepcopy(context) if isinstance(context, dict) else None
+            exposure = self.current_product.get("exposure_context")
+            if isinstance(exposure, dict):
+                self.exposure_context.update(copy.deepcopy(exposure))
 
     def _add_context_message(self) -> None:
         if not self.current_product and not self.current_analysis:
@@ -821,6 +914,7 @@ class FoodGuardMCPClient:
             check_nutrition_label,
             search_disease_guideline,
             search_food_regulation,
+            search_health_risk,
         )
 
         return {
@@ -830,6 +924,7 @@ class FoodGuardMCPClient:
             "check_nutrition_claim": check_nutrition_claim,
             "calculate_consumption_nutrients": calculate_consumption_nutrients,
             "search_disease_guideline": search_disease_guideline,
+            "search_health_risk": search_health_risk,
         }
 
     async def summarize_analysis(
@@ -880,6 +975,7 @@ class FoodGuardMCPClient:
 
         self._last_llm_used = False
         self._last_parsed_followup = None
+        self._last_health_risk_result = None
         previous_users = [
             str(item.get("content", ""))
             for item in self.history
@@ -888,7 +984,10 @@ class FoodGuardMCPClient:
         self._last_previous_context = previous_users[-1] if previous_users else None
         contextual_query = _fallback_query(self.history, user_message)
         intent = _fallback_intent(user_message)
-        if intent == "search" and len(user_message.strip()) <= 12:
+        if intent == "search" and (
+            len(user_message.strip()) <= 12
+            or _fallback_intent(contextual_query) == "health_risk"
+        ):
             contextual_intent = _fallback_intent(contextual_query)
             if contextual_intent != "search":
                 intent = contextual_intent
@@ -976,6 +1075,20 @@ class FoodGuardMCPClient:
                     "query": contextual_query,
                     "product_context": product,
                 }
+            elif intent == "health_risk":
+                self.exposure_context = parse_exposure_context(
+                    user_message, self.exposure_context
+                )
+                if self.current_product is not None:
+                    self.current_product["exposure_context"] = copy.deepcopy(
+                        self.exposure_context
+                    )
+                tool_name = "search_health_risk"
+                arguments = {
+                    "question": contextual_query,
+                    "product_context": product,
+                    "exposure_context": self.exposure_context,
+                }
 
             try:
                 payload = await self.call_tool(tool_name, arguments)
@@ -1003,6 +1116,8 @@ class FoodGuardMCPClient:
                         payload["disease_result"] = disease_payload
                         called_tools.append("search_disease_guideline")
                         _collect_sources(disease_payload, sources)
+                if intent == "health_risk":
+                    self._last_health_risk_result = copy.deepcopy(payload.get("result", {}))
             except Exception:
                 payload = {
                     "result": {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE},
@@ -1013,7 +1128,7 @@ class FoodGuardMCPClient:
             )
 
         answer_source = "rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback")
-        if intent in {"health_guidance", "consumption"} and self._llm is not None:
+        if intent in {"health_guidance", "health_risk", "consumption"} and self._llm is not None:
             generated = await _llm_followup_answer(
                 self._llm,
                 self.model,
@@ -1090,6 +1205,15 @@ class FoodGuardMCPClient:
                 {"claim": "、".join(claims), "nutrition_data": nutrition},
             ),
         }
+        if has_health_risk_signal(product_data):
+            task_results["health_risk"] = await self._safe_analysis_tool(
+                "search_health_risk",
+                {
+                    "question": "目前食品可能涉及哪些官方健康風險主題？",
+                    "product_context": product_data,
+                    "exposure_context": {},
+                },
+            )
         self.current_product = copy.deepcopy(product_data)
         self.current_analysis = copy.deepcopy(task_results)
         overall_summary = await self.summarize_analysis(product_data, task_results)
@@ -1108,10 +1232,16 @@ class FoodGuardMCPClient:
                 "check_allergens",
                 "check_nutrition_label",
                 "check_nutrition_claim",
+                *(["search_health_risk"] if "health_risk" in task_results else []),
             ],
             "diagnostics": self._diagnostics(
                 intent="product_analysis",
-                tool_calls=["check_allergens", "check_nutrition_label", "check_nutrition_claim"],
+                tool_calls=[
+                    "check_allergens",
+                    "check_nutrition_label",
+                    "check_nutrition_claim",
+                    *(["search_health_risk"] if "health_risk" in task_results else []),
+                ],
                 sources=all_sources,
                 answer_source="llm" if self._llm else "mixed",
             ),
@@ -1135,7 +1265,10 @@ class FoodGuardMCPClient:
         # The small local model is slow and unreliable at deciding whether to
         # call a tool. Health questions can be routed deterministically first,
         # which both reduces latency and guarantees the disease guide is used.
-        if _fallback_intent(user_message) in {"health_guidance", "consumption"}:
+        routed_intent = _fallback_intent(user_message)
+        if routed_intent == "search":
+            routed_intent = _fallback_intent(_fallback_query(self.history, user_message))
+        if routed_intent in {"health_guidance", "health_risk", "consumption"}:
             return await self._ask_without_llm(user_message)
         if self._llm is None:
             return await self._ask_without_llm(user_message)
