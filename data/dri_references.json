@@ -1,0 +1,25 @@
+{
+  "source_title": "國人膳食營養素參考攝取量及其說明第八版",
+  "source_organization": "衛生福利部國民健康署",
+  "source_url": "https://www.hpa.gov.tw/Pages/Detail.aspx?nodeid=4248&pid=12285",
+  "records": [
+    {"nutrient": "protein", "reference_type": "RDA", "reference_value": 70, "unit": "g/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_蛋白質.pdf"},
+    {"nutrient": "protein", "reference_type": "RDA", "reference_value": 60, "unit": "g/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_蛋白質.pdf"},
+    {"nutrient": "sodium", "reference_type": "CDRR", "reference_value": 2300, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "all", "life_stage": "adult", "source": "DRIs第八版_鈉.pdf"},
+    {"nutrient": "fiber", "reference_type": "AI", "reference_value": 14, "unit": "g/1000 kcal", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "all", "life_stage": "adult", "source": "DRIs第八版_全.pdf", "formula": "14 g per 1000 kcal"},
+    {"nutrient": "calcium", "reference_type": "AI", "reference_value": 1000, "unit": "mg/day", "population": "healthy adults", "age_range": "19-50", "age_min": 19, "age_max": 50, "sex": "all", "life_stage": "adult", "source": "DRIs第八版_鈣.pdf"},
+    {"nutrient": "calcium", "reference_type": "AI", "reference_value": 1000, "unit": "mg/day", "population": "healthy adults", "age_range": "51+", "age_min": 51, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_鈣.pdf"},
+    {"nutrient": "calcium", "reference_type": "AI", "reference_value": 1200, "unit": "mg/day", "population": "healthy adults", "age_range": "51+", "age_min": 51, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_鈣.pdf"},
+    {"nutrient": "iron", "reference_type": "RDA", "reference_value": 10, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_鐵.pdf"},
+    {"nutrient": "iron", "reference_type": "RDA", "reference_value": 15, "unit": "mg/day", "population": "healthy adults", "age_range": "19-50", "age_min": 19, "age_max": 50, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_鐵.pdf"},
+    {"nutrient": "iron", "reference_type": "RDA", "reference_value": 10, "unit": "mg/day", "population": "healthy adults", "age_range": "51+", "age_min": 51, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_鐵.pdf"},
+    {"nutrient": "potassium", "reference_type": "AI", "reference_value": 2800, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_鉀.pdf"},
+    {"nutrient": "potassium", "reference_type": "AI", "reference_value": 2500, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_鉀.pdf"},
+    {"nutrient": "vitamin_d", "reference_type": "AI", "reference_value": 10, "unit": "µg/day", "population": "healthy adults", "age_range": "19-50", "age_min": 19, "age_max": 50, "sex": "all", "life_stage": "adult", "source": "DRIs第八版_維生素D.pdf"},
+    {"nutrient": "vitamin_d", "reference_type": "AI", "reference_value": 15, "unit": "µg/day", "population": "healthy adults", "age_range": "51+", "age_min": 51, "age_max": null, "sex": "all", "life_stage": "adult", "source": "DRIs第八版_維生素D.pdf"},
+    {"nutrient": "magnesium", "reference_type": "RDA", "reference_value": 380, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_鎂.pdf"},
+    {"nutrient": "magnesium", "reference_type": "RDA", "reference_value": 320, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_鎂.pdf"},
+    {"nutrient": "zinc", "reference_type": "RDA", "reference_value": 15, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "male", "life_stage": "adult", "source": "DRIs第八版_總表.pdf"},
+    {"nutrient": "zinc", "reference_type": "RDA", "reference_value": 12, "unit": "mg/day", "population": "healthy adults", "age_range": "19+", "age_min": 19, "age_max": null, "sex": "female", "life_stage": "adult", "source": "DRIs第八版_總表.pdf"}
+  ]
+}

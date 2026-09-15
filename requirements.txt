@@ -1,0 +1,20 @@
+# UI and configuration
+streamlit>=1.35.0
+python-dotenv>=1.0.1
+
+# Official MCP Python SDK (v2 stable API)
+mcp>=2.0.0
+
+# PDF, embeddings, and vector search
+PyMuPDF>=1.24.0
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+numpy>=1.26.0
+
+# LLM and data validation
+openai>=1.40.0
+pydantic>=2.8.0
+
+# Testing and HTTP utilities
+pytest>=8.0.0
+requests>=2.32.0
