@@ -2,7 +2,7 @@
 
 **基於 MCP 與 RAG 的食品標示智慧合規判讀系統**
 
-本專案是大學專題 Demo，讓使用者輸入食品資料後，先由 Python 整理欄位，再透過 MCP Client 呼叫分析工具。每個分析工具會針對自己的主題檢索 `documents/` 中的官方資料，經規則引擎判讀後，再由 Client 整理成可追溯的結論。
+本專案是大學專題 Demo，讓使用者輸入食品資料後，先由 Python 整理欄位，再透過 MCP Client 呼叫分析工具。每個分析工具會針對自己的主題檢索 `documents/` 中的官方資料，經規則引擎判讀後，再由 Client 整理成可追溯的結論。FoodGuard 同時支援一般問答與 Web Search；食品、營養、疾病和法規問題仍優先使用產品資料、結構化資料與官方 RAG。
 
 目前已包含 RAG 索引、MCP Server、MCP Client、輸入解析、規則判讀與 Streamlit Demo。
 
@@ -93,7 +93,19 @@ results = search("食品標示", top_k=5)
 py mcp_server.py
 ```
 
-Server 提供 `search_food_regulation`、`check_allergens`、`check_nutrition_label` 與 `check_nutrition_claim`。分析 tools 會先整理輸入，再執行任務專屬的 RAG 搜尋與來源過濾，最後才由 Python rule engine 產生結論。每筆 source 含 `document`、`page`、`text`、`quote`、`score`。
+Server 提供 `search_food_regulation`、`check_allergens`、`check_nutrition_label`、`check_nutrition_claim`、`web_search` 與 `fetch_web_page`。分析 tools 會先整理輸入，再執行任務專屬的 RAG 搜尋與來源過濾，最後才由 Python rule engine 產生結論。Web Search 回傳統一的 `query / results[]` schema，每筆結果保留 `title`、`url`、`publisher`、`published_date`、`retrieved_at` 與清理後的 `snippet`。
+
+### Web Search 設定
+
+Web Search 一律由 MCP tool 執行，不由 Streamlit UI 直接連線。部署時可設定：
+
+```text
+WEB_SEARCH_ENABLED=true
+WEB_SEARCH_PROVIDER=duckduckgo
+WEB_SEARCH_API_KEY=
+```
+
+`duckduckgo` 可作為不需 API key 的開發 fallback；也支援 `brave`、`tavily` 與 `serper` 的 provider abstraction。搜尋服務關閉或連線失敗時，系統會保留產品資料、Rule Engine、DRIs、RAG 與 LLM fallback，並明確說明無法取得即時資訊，不會假裝已上網。
 
 使用 stdio MCP client smoke test：
 
@@ -143,7 +155,7 @@ streamlit run app.py
 4. `foodguard.rules` 先做過敏原、欄位完整性與宣稱適用性判讀；數字比較只在來源明確提供門檻時執行。
 5. LLM 只負責整理已產生的結論與來源；無法使用 LLM 時，Client 會使用安全的本機摘要。
 
-營養宣稱填寫「無」或留白時，會標記為 `not_applicable`，並跳過宣稱法規檢索。
+營養宣稱填寫「無」或留白時，會標記為 `not_applicable`，並跳過宣稱法規檢索。Router 會辨識 `current_product_question`、`food_regulation`、`nutrition_reference`、`disease_guidance`、`health_risk`、`general_knowledge`、`current_information` 與 `web_search_required`，並把目前產品、對話歷史、使用者資料與健康脈絡套用到追問。
 
 ## 測試
 

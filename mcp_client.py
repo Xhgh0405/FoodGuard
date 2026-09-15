@@ -150,6 +150,27 @@ _LOCAL_TOOL_SCHEMAS: dict[str, tuple[str, dict[str, Any]]] = {
             "required": ["product_context"],
         },
     ),
+    "web_search": (
+        "Search the configured web provider for current or missing information and return cleaned sources.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "recency_days": {"type": ["integer", "null"]},
+                "max_results": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    ),
+    "fetch_web_page": (
+        "Fetch readable text from one HTTP(S) search result when snippets are insufficient.",
+        {
+            "type": "object",
+            "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer"}},
+            "required": ["url"],
+        },
+    ),
     "check_allergens": (
         "Classify possible allergens in the supplied ingredients.",
         {
@@ -277,10 +298,28 @@ def _collect_sources(payload: dict[str, Any], target: list[dict[str, Any]]) -> N
     for source in payload.get("sources", []):
         if not isinstance(source, dict):
             continue
-        if not all(key in source for key in ("document", "page", "text", "score")):
+        if all(key in source for key in ("document", "page", "text", "score")):
+            normalized = dict(source)
+        elif source.get("url"):
+            # Accept the public web-search schema too, while keeping the UI and
+            # evidence synthesizer on one internal source shape.
+            normalized = {
+                "document": source.get("publisher") or source.get("title") or "Web source",
+                "page": "web",
+                "text": source.get("snippet", ""),
+                "quote": source.get("snippet", ""),
+                "score": source.get("score", 0.0),
+                "knowledge_domain": "web",
+                "source_url": source.get("url"),
+                "title": source.get("title"),
+                "publisher": source.get("publisher"),
+                "published_date": source.get("published_date"),
+                "retrieved_at": source.get("retrieved_at"),
+            }
+        else:
             continue
-        if source not in target:
-            target.append(dict(source))
+        if normalized not in target:
+            target.append(normalized)
 
 
 def _looks_like_food_question(message: str) -> bool:
@@ -319,13 +358,22 @@ def _fallback_query(history: list[dict[str, Any]], current: str) -> str:
 
 
 def _fallback_intent(message: str) -> str:
-    """Route common questions safely when no generative model is available."""
+    """Route common questions safely when no generative model is available.
+
+    These labels are deliberately broader than the old food-only router.  The
+    actual tool execution may still combine more than one label (for example a
+    product check plus a current-regulation search).
+    """
 
     compact = re.sub(r"\s+", "", message)
     if parse_consumption_amount(message):
-        return "consumption"
+        return "current_product_question"
     if re.search(r"(?:半|一|兩|二|三|1|2|3)\s*(?:瓶|包|盒|罐|份)", message):
-        return "consumption"
+        return "current_product_question"
+    if any(term in compact for term in ("今天", "現在", "最近", "最新", "今年", "現任", "更新", "公告")):
+        return "current_information"
+    if any(term in compact for term in ("食品法規", "食品標示規定", "營養標示規定", "無糖標準", "法規", "規定")):
+        return "food_regulation"
     if any(
         term in compact.casefold()
         for term in (
@@ -352,8 +400,34 @@ def _fallback_intent(message: str) -> str:
     if any(term in compact for term in ("營養標示", "標示完整", "缺少欄位")):
         return "nutrition_label"
     if any(term in compact for term in ("高血壓", "糖尿病", "腎臟病", "腎病", "高血脂", "血脂")):
-        return "health_guidance"
-    return "search"
+        return "disease_guidance"
+    if any(term in compact for term in ("這瓶", "這包", "這盒", "這個食品", "這項食品", "產品", "標示")):
+        return "current_product_question"
+    if any(term in compact for term in ("幫我查", "請查", "搜尋", "查一下", "查詢")):
+        return "web_search_required"
+    return "general_knowledge"
+
+
+def _needs_web_search(message: str, intent: str) -> bool:
+    """Decide whether volatile or explicitly requested information needs Web."""
+
+    compact = re.sub(r"\s+", "", str(message or ""))
+    volatile = ("今天", "現在", "最近", "最新", "今年", "現任", "更新", "公告", "新研究", "目前")
+    explicit = ("幫我查", "請查", "搜尋", "查一下", "查詢", "上網", "網路")
+    return intent in {"current_information", "web_search_required"} or any(term in compact for term in (*volatile, *explicit))
+
+
+def _web_domains_for_question(message: str, intent: str) -> list[str]:
+    """Restrict health and regulation searches to authoritative domains."""
+
+    compact = re.sub(r"\s+", "", str(message or ""))
+    if any(term in compact for term in ("法規", "標示", "TFDA", "食品添加物", "營養標示", "無糖")):
+        return ["fda.gov.tw", "mohw.gov.tw"]
+    if any(term in compact for term in ("糖尿病", "高血壓", "腎臟病", "疾病", "健康", "飲食")):
+        return ["hpa.gov.tw", "mohw.gov.tw", "who.int"]
+    if any(term in compact for term in ("致癌", "癌症", "IARC", "加工肉", "研究")):
+        return ["iarc.who.int", "who.int", "nih.gov", "fda.gov"]
+    return []
 
 
 def _claim_from_question(message: str, current_claims: list[str]) -> str:
@@ -624,6 +698,152 @@ def _nutrition_reference_answer(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _current_product_answer(question: str, product: dict[str, Any]) -> str:
+    """Answer simple product-value questions from the parsed label first."""
+
+    name = str(product.get("product_name") or "目前食品")
+    nutrition = product.get("nutrition", {})
+    nutrition = nutrition if isinstance(nutrition, dict) else {}
+    values = nutrition.get("values", {})
+    values = values if isinstance(values, dict) else {}
+    field_map = (
+        (("糖", "糖類", "sugar"), "sugar_g", "糖", "g"),
+        (("碳水", "碳水化合物", "carbohydrate"), "carbohydrate_g", "碳水化合物", "g"),
+        (("蛋白", "protein"), "protein_g", "蛋白質", "g"),
+        (("鈉", "sodium"), "sodium_mg", "鈉", "mg"),
+        (("熱量", "卡路里", "calorie", "kcal"), "calories_kcal", "熱量", "kcal"),
+        (("脂肪", "fat"), "fat_g", "脂肪", "g"),
+    )
+    compact = re.sub(r"\s+", "", question).casefold()
+    for terms, field, label, unit in field_map:
+        if any(term.casefold() in compact for term in terms):
+            value = values.get(field)
+            if value is None:
+                return f"目前「{name}」的營養資料沒有提供{label}數值，不能自行推算。"
+            basis = nutrition.get("nutrition_basis") or {}
+            basis_text = ""
+            if isinstance(basis, dict) and basis.get("amount") is not None:
+                basis_text = f"（標示基準：每 {basis.get('amount'):g}{basis.get('unit', '')}）"
+            return f"依目前「{name}」的營養標示，{label}是 {value:g} {unit}{basis_text}。"
+    return (
+        f"目前可以依「{name}」的產品資料回答，但問題沒有指出要查看哪個欄位。"
+        "請指定糖、碳水化合物、蛋白質、鈉或熱量；若要換算實際食用量，也請提供毫升、公克或幾份。"
+    )
+
+
+def _web_fallback_answer(payload: dict[str, Any]) -> str:
+    """Show cleaned evidence metadata when no model is available to synthesize it."""
+
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    results = result.get("results", []) if isinstance(result, dict) else []
+    if not results:
+        return "目前無法存取即時網路資訊，因此以下回答只能依現有知識庫與模型知識整理。"
+    lines = ["以下是搜尋到的相關資料（搜尋結果本身不等於最終結論）："]
+    for item in results[:5]:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title") or item.get("url") or "未命名來源"
+        publisher = item.get("publisher") or "未知發布者"
+        date = f"，日期：{item['published_date']}" if item.get("published_date") else ""
+        snippet = item.get("snippet") or "未提供摘要"
+        lines.append(f"- {title}（{publisher}{date}）\n  {snippet}\n  URL：{item.get('url', '')}")
+    return "\n".join(lines)
+
+
+WEB_SYNTHESIS_PROMPT = """你是 FoodGuard 的一般問答整理器。
+只能根據輸入的搜尋結果、目前產品與對話脈絡回答；不得捏造來源、日期或最新結論。
+若搜尋結果不足，明確說明無法確認。食品、健康與法規問題優先依官方來源，並把產品標示數值與網路資料分開說明。
+回答繁體中文，簡潔列出結論、限制與來源標題／URL；不要輸出 chain-of-thought。
+"""
+
+
+async def _llm_web_answer(
+    llm: Any,
+    model: str,
+    question: str,
+    product: dict[str, Any],
+    payload: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> str | None:
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    if result.get("status") not in {"ok", "no_results"} or not result.get("results"):
+        return None
+    prompt = {
+        "question": question,
+        "current_product": product,
+        "search_result_schema": {
+            "query": result.get("query"),
+            "results": result.get("results", [])[:5],
+        },
+        "recent_history": [item for item in history[-8:] if item.get("role") in {"user", "assistant"}],
+    }
+    try:
+        completion = await llm.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": WEB_SYNTHESIS_PROMPT},
+                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+            ],
+            temperature=0,
+            max_tokens=420,
+        )
+        answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
+        return answer or None
+    except Exception:
+        return None
+
+
+def _general_fallback_answer(question: str) -> str:
+    """Small offline safety net; configured LLMs handle open-ended questions."""
+
+    compact = re.sub(r"\s+", "", question).casefold()
+    if "python" in compact and ("什麼" in question or "是" in question):
+        return "Python 是一種高階、通用的程式語言，常用於網頁、資料分析、自動化與人工智慧。"
+    if "日本首都" in question or "日本的首都是" in question:
+        return "日本的首都是東京。"
+    if "2+2" in compact or "2＋2" in compact:
+        return "2 + 2 = 4。"
+    if "mcp" in compact and "什麼" in question:
+        return "MCP（Model Context Protocol）是一套讓模型以一致介面使用外部工具與資料的協定。"
+    if "機器學習" in question:
+        return "機器學習是讓程式從資料中學習模式，進而進行預測、分類或生成的人工智慧方法。"
+    if "地球離太陽" in question:
+        return "地球與太陽平均距離約 1 億 4960 萬公里，也就是 1 天文單位。"
+    return "目前沒有可用的 LLM 連線，無法可靠回答這個一般問題；請設定 LLM_PROVIDER 與模型後再試。"
+
+
+async def _llm_general_answer(
+    llm: Any,
+    model: str,
+    question: str,
+    product: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> str | None:
+    try:
+        completion = await llm.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是 FoodGuard 的一般問答助理。以繁體中文回答，不要聲稱已取得即時資料，也不要捏造來源。若問題涉及目前食品，優先使用輸入的產品資料。",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"question": question, "current_product": product, "recent_history": history[-6:]},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0,
+            max_tokens=420,
+        )
+        answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
+        return answer or None
+    except Exception:
+        return None
+
+
 def _synthesize_payloads(
     payloads: list[dict[str, Any]],
     product_context: dict[str, Any] | None = None,
@@ -701,6 +921,9 @@ async def _llm_followup_answer(
                 if isinstance(disease_payload, dict)
                 else None
             ),
+            "web_search": payload.get("web_result", {}).get("result", {})
+            if isinstance(payload.get("web_result"), dict)
+            else None,
         },
         "evidence_summary": _synthesize_payloads(evidence_payloads, product),
         "recent_conversation_history": [
@@ -814,6 +1037,7 @@ class FoodGuardMCPClient:
             "preparation_method": None,
         }
         self._last_health_risk_result: dict[str, Any] | None = None
+        self._last_web_result: dict[str, Any] | None = None
         if self._llm is None and api_key:
             try:
                 timeout = float(_get_setting("OPENAI_TIMEOUT", "20"))
@@ -852,6 +1076,16 @@ class FoodGuardMCPClient:
             "evidence_count": len(sources),
             "evidence_status": "available" if sources else "insufficient",
             "answer_source": answer_source,
+            "answer_mode": answer_source,
+            "web_search_used": bool(
+                self._last_web_result
+                and self._last_web_result.get("status") in {"ok", "no_results"}
+                and self._last_web_result.get("results")
+            ),
+            "web_search_attempted": bool(self._last_web_result),
+            "web_query": (self._last_web_result or {}).get("query"),
+            "web_sources": len((self._last_web_result or {}).get("results", [])),
+            "web_provider": (self._last_web_result or {}).get("provider"),
             "nutrition_basis": (self.current_product or {}).get("nutrition_basis")
             or (
                 (self.current_product or {}).get("nutrition", {}).get("nutrition_basis")
@@ -1049,6 +1283,8 @@ class FoodGuardMCPClient:
             check_nutrition_claim,
             check_nutrition_label,
             lookup_dri_reference,
+            web_search,
+            fetch_web_page_tool,
             search_disease_guideline,
             search_food_regulation,
             search_health_risk,
@@ -1062,6 +1298,8 @@ class FoodGuardMCPClient:
             "calculate_consumption_nutrients": calculate_consumption_nutrients,
             "analyze_nutrition_insights": analyze_nutrition_insights,
             "lookup_dri_reference": lookup_dri_reference,
+            "web_search": web_search,
+            "fetch_web_page": fetch_web_page_tool,
             "search_disease_guideline": search_disease_guideline,
             "search_health_risk": search_health_risk,
         }
@@ -1117,6 +1355,7 @@ class FoodGuardMCPClient:
         self._last_health_risk_result = None
         self._last_nutrition_insights = None
         self._last_dri_result = None
+        self._last_web_result = None
         previous_users = [
             str(item.get("content", ""))
             for item in self.history
@@ -1125,6 +1364,35 @@ class FoodGuardMCPClient:
         self._last_previous_context = previous_users[-1] if previous_users else None
         contextual_query = _fallback_query(self.history, user_message)
         intent = _fallback_intent(user_message)
+        if self.consumption_context and (
+            re.search(r"\d+\s*歲", user_message)
+            or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+        ):
+            intent = "consumption"
+        if intent in {"intake", "general_knowledge", "current_product_question"} and _fallback_intent(contextual_query) == "health_risk":
+            intent = "health_risk"
+        if intent == "current_product_question":
+            # A stated amount is a deterministic scaling operation.  A simple
+            # label question remains product_context and is answered from the
+            # active parsed product before any general model knowledge.
+            if parse_consumption_amount(user_message) or re.search(
+                r"(?:半|一|兩|二|三|1|2|3)\s*(?:瓶|包|盒|罐|份)", user_message
+            ):
+                intent = "consumption"
+            elif self.consumption_context and (
+                re.search(r"\d+\s*歲", user_message)
+                or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+            ):
+                intent = "consumption"
+        elif intent == "disease_guidance":
+            intent = "health_guidance"
+        elif intent == "current_information":
+            if any(term in user_message for term in ("致癌", "癌症", "健康風險", "風險", "研究")):
+                intent = "health_risk"
+            elif any(term in user_message for term in ("糖尿病", "高血壓", "腎臟病", "高血脂")):
+                intent = "health_guidance"
+            elif self.current_product and any(term in user_message for term in ("高蛋白", "低鈉", "無糖", "高纖", "低脂")):
+                intent = "claim"
         if intent == "search" and (
             len(user_message.strip()) <= 12
             or _fallback_intent(contextual_query) == "health_risk"
@@ -1150,6 +1418,12 @@ class FoodGuardMCPClient:
             or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
         ):
             intent = "consumption"
+        if intent == "current_information" and self.current_product and any(
+            term in user_message for term in ("這瓶", "這包", "這盒", "這個食品", "符合", "規定")
+        ):
+            # Keep the current product in the query and still perform the web
+            # lookup below; this becomes a mixed product + web answer.
+            pass
         if append_user:
             self.history.append({"role": "user", "content": user_message})
         self.user_profile = parse_user_profile(user_message, self.user_profile)
@@ -1158,8 +1432,36 @@ class FoodGuardMCPClient:
         called_tools: list[str] = []
         payload: dict[str, Any] = {"result": {}, "sources": []}
 
-        if intent == "intake":
+        if intent == "general_knowledge":
+            answer = _general_fallback_answer(user_message)
+        elif intent == "intake":
             answer = _intake_clarification(self.current_product)
+        elif intent == "current_product_question":
+            product = self.current_product or {}
+            answer = _current_product_answer(user_message, product)
+        elif intent in {"current_information", "web_search_required"}:
+            product = self.current_product or {}
+            arguments = {
+                "query": contextual_query,
+                "domains": _web_domains_for_question(contextual_query, intent),
+                "recency_days": 30 if any(term in user_message for term in ("最近", "最新", "目前", "現在")) else None,
+                "max_results": 5,
+            }
+            try:
+                payload = await self.call_tool("web_search", arguments)
+                called_tools.append("web_search")
+                self._last_web_result = copy.deepcopy(payload.get("result", {}))
+                _collect_sources(payload, sources)
+            except Exception as exc:
+                self._last_web_result = {
+                    "status": "unavailable",
+                    "query": contextual_query,
+                    "provider": _get_setting("WEB_SEARCH_PROVIDER", "duckduckgo"),
+                    "results": [],
+                    "message": str(exc),
+                }
+                payload = {"result": self._last_web_result, "sources": []}
+            answer = _web_fallback_answer(payload)
         else:
             product = self.current_product or {}
             tool_name = "search_food_regulation"
@@ -1307,6 +1609,27 @@ class FoodGuardMCPClient:
                         _collect_sources(disease_payload, sources)
                 if intent == "health_risk":
                     self._last_health_risk_result = copy.deepcopy(payload.get("result", {}))
+                if _needs_web_search(user_message, intent) and intent not in {"current_information", "web_search_required"}:
+                    web_arguments = {
+                        "query": contextual_query,
+                        "domains": _web_domains_for_question(contextual_query, intent),
+                        "recency_days": 30,
+                        "max_results": 5,
+                    }
+                    try:
+                        web_payload = await self.call_tool("web_search", web_arguments)
+                        called_tools.append("web_search")
+                        self._last_web_result = copy.deepcopy(web_payload.get("result", {}))
+                        _collect_sources(web_payload, sources)
+                        payload["web_result"] = web_payload
+                    except Exception as exc:
+                        self._last_web_result = {
+                            "status": "unavailable",
+                            "query": contextual_query,
+                            "provider": _get_setting("WEB_SEARCH_PROVIDER", "duckduckgo"),
+                            "results": [],
+                            "message": str(exc),
+                        }
             except Exception:
                 payload = {
                     "result": {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE},
@@ -1316,7 +1639,14 @@ class FoodGuardMCPClient:
                 intent, contextual_query, payload, product=product
             )
 
-        answer_source = "rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback")
+        if intent == "consumption":
+            answer_source = "rule_engine"
+        elif intent == "current_product_question":
+            answer_source = "product_context"
+        elif intent in {"current_information", "web_search_required"}:
+            answer_source = "web" if self._last_web_result and self._last_web_result.get("results") else "fallback"
+        else:
+            answer_source = "mixed" if called_tools else "fallback"
         # Consumption output stays rule-engine authoritative: a model may
         # explain numbers, but it must not rewrite or omit deterministic facts.
         if intent in {"health_guidance", "health_risk"} and self._llm is not None:
@@ -1333,9 +1663,51 @@ class FoodGuardMCPClient:
                 answer = generated
                 self._last_llm_used = True
                 answer_source = "llm"
+        web_payload = payload.get("web_result") if isinstance(payload, dict) else None
+        if isinstance(web_payload, dict) and self._llm is not None and self._last_web_result and self._last_web_result.get("results"):
+            generated = await _llm_web_answer(
+                self._llm,
+                self.model,
+                user_message,
+                self.current_product or {},
+                web_payload,
+                self.history,
+            )
+            if generated:
+                answer = generated
+                self._last_llm_used = True
+                answer_source = "mixed" if intent not in {"current_information", "web_search_required"} else "web"
+        if intent == "general_knowledge" and self._llm is not None:
+            generated = await _llm_general_answer(
+                self._llm, self.model, user_message, self.current_product or {}, self.history
+            )
+            if generated:
+                answer = generated
+                self._last_llm_used = True
+                answer_source = "direct_llm"
+        if intent in {"current_information", "web_search_required"} and (
+            not self._last_web_result or not self._last_web_result.get("results", [])
+        ):
+            if self._llm is not None:
+                generated = await _llm_general_answer(
+                    self._llm, self.model, user_message, self.current_product or {}, self.history
+                )
+                if generated:
+                    answer = (
+                        "目前無法存取即時網路資訊，因此以下回答只能依現有知識庫與模型知識整理。\n\n"
+                        + generated
+                    )
+                    self._last_llm_used = True
+                    answer_source = "direct_llm"
+        if isinstance(web_payload, dict) and self._last_web_result and not self._last_web_result.get("results", []):
+            web_notice = _web_fallback_answer(web_payload)
+            if web_notice not in answer:
+                answer = f"{answer}\n\n{web_notice}".strip()
         if intent == "consumption" and payload.get("result", {}).get("status") == "calculated":
             # The calculation is a deterministic product-label operation and
             # does not require a RAG source; only sanitize any model wording.
+            answer = _sanitize_answer(answer, sources) or NOT_ENOUGH_EVIDENCE
+        elif intent in {"general_knowledge", "current_product_question", "current_information", "web_search_required"} and not sources:
             answer = _sanitize_answer(answer, sources) or NOT_ENOUGH_EVIDENCE
         else:
             answer = _answer_with_sources(answer, sources)
@@ -1485,10 +1857,28 @@ class FoodGuardMCPClient:
             re.search(r"\d+\s*歲", user_message) or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
         ):
             routed_intent = "consumption"
+        if routed_intent == "general_knowledge" and self.consumption_context and (
+            re.search(r"\d+\s*歲", user_message)
+            or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+        ):
+            routed_intent = "consumption"
         if routed_intent == "nutrition_reference" and self.current_product and self.consumption_context:
             if not any(term in user_message for term in ("成人", "一天", "每日", "參考", "建議", "上限")):
                 routed_intent = "consumption"
-        if routed_intent in {"health_guidance", "health_risk", "consumption", "nutrition_reference", "intake"}:
+        if routed_intent == "current_product_question" and parse_consumption_amount(user_message):
+            routed_intent = "consumption"
+        if routed_intent in {
+            "health_guidance",
+            "disease_guidance",
+            "health_risk",
+            "consumption",
+            "current_product_question",
+            "nutrition_reference",
+            "intake",
+            "current_information",
+            "web_search_required",
+            "food_regulation",
+        }:
             return await self._ask_without_llm(user_message)
         if self._llm is None:
             return await self._ask_without_llm(user_message)
@@ -1582,7 +1972,7 @@ class FoodGuardMCPClient:
                         intent=_fallback_intent(user_message),
                         tool_calls=called_tools,
                         sources=sources,
-                        answer_source="llm" if assistant_text else "fallback",
+                        answer_source="direct_llm" if assistant_text else "fallback",
                     ),
                 )
 

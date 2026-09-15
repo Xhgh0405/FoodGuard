@@ -31,6 +31,8 @@ async def main() -> None:
             "search_disease_guideline",
             "calculate_consumption_nutrients",
             "search_health_risk",
+            "web_search",
+            "fetch_web_page",
         }
         assert names >= expected, f"Missing tools: {expected - names}"
 
@@ -67,6 +69,8 @@ async def main() -> None:
                     "exposure_context": {},
                 },
             ),
+            ("web_search", {"query": "最新食品標示", "domains": ["fda.gov.tw"], "max_results": 5}),
+            ("fetch_web_page", {"url": "file://not-allowed", "max_chars": 1000}),
         ]
         for name, arguments in calls:
             result = await client.call_tool(name, arguments)

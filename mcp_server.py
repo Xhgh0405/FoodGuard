@@ -30,6 +30,7 @@ from foodguard.rules import (
     analyse_nutrition_claim,
     analyse_nutrition_label,
 )
+from foodguard.web_search import fetch_web_page, search_web
 from rag import search as rag_search
 
 
@@ -365,6 +366,71 @@ def analyze_nutrition_insights(
         ],
         {"engine": "Nutrition Insight Engine", "deterministic": True},
     )
+
+
+def _web_sources(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Adapt the public web schema to FoodGuard's auditable source records."""
+
+    sources: list[dict[str, Any]] = []
+    for item in result.get("results", []):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        rank = int(item.get("rank", len(sources) + 1))
+        sources.append(
+            {
+                "document": item.get("publisher") or item.get("title") or "Web source",
+                "page": "web",
+                "text": item.get("snippet", ""),
+                "quote": item.get("snippet", ""),
+                "score": max(0.01, 1.0 / rank),
+                "knowledge_domain": "web",
+                "source_url": item.get("url"),
+                "title": item.get("title"),
+                "publisher": item.get("publisher"),
+                "published_date": item.get("published_date"),
+                "retrieved_at": item.get("retrieved_at"),
+            }
+        )
+    return sources
+
+
+@mcp.tool(
+    name="web_search",
+    description=(
+        "Search the configured web provider and return cleaned title, URL, publisher, "
+        "date and snippet records. Use for current information or when local evidence is insufficient."
+    ),
+)
+def web_search(
+    query: str,
+    domains: list[str] | None = None,
+    recency_days: int | None = None,
+    max_results: int = 5,
+) -> dict[str, Any]:
+    result = search_web(query, domains, recency_days, max_results)
+    return _response(result, _web_sources(result), {"provider": result.get("provider"), "web_search": True})
+
+
+@mcp.tool(
+    name="fetch_web_page",
+    description="Fetch readable text from one HTTP(S) result when a search snippet is not enough.",
+)
+def fetch_web_page_tool(url: str, max_chars: int = 12000) -> dict[str, Any]:
+    result = fetch_web_page(url, max_chars)
+    source = []
+    if result.get("status") == "ok":
+        source.append(
+            {
+                "document": result.get("title") or result.get("url"),
+                "page": "web",
+                "text": result.get("text", ""),
+                "quote": result.get("text", "")[:1000],
+                "score": 1.0,
+                "knowledge_domain": "web",
+                "source_url": result.get("url"),
+            }
+        )
+    return _response(result, source, {"web_fetch": True})
 
 
 @mcp.tool()
