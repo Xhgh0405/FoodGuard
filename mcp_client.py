@@ -357,6 +357,33 @@ def _fallback_query(history: list[dict[str, Any]], current: str) -> str:
     return "；".join(previous_questions + [current]).strip()
 
 
+def _is_contextual_followup(message: str) -> bool:
+    """Return whether a short question clearly refers to the prior turn.
+
+    A full question with its own subject must not inherit a previous food or
+    health topic.  Only explicit anaphora and short follow-up phrasing should
+    use conversation context for deterministic intent routing.
+    """
+
+    compact = re.sub(r"\s+", "", str(message or ""))
+    if not compact:
+        return False
+    if any(
+        term in compact
+        for term in (
+            "這瓶", "這包", "這盒", "這個食品", "這項食品", "該產品", "上述", "前面",
+            "剛剛", "這些", "這次", "同一個產品",
+        )
+    ):
+        return True
+    if len(compact) > 18:
+        return False
+    return any(
+        term in compact
+        for term in ("那", "它", "這個", "如果", "還有", "呢", "如何", "怎麼", "可以嗎")
+    )
+
+
 def _fallback_intent(message: str) -> str:
     """Route common questions safely when no generative model is available.
 
@@ -366,8 +393,17 @@ def _fallback_intent(message: str) -> str:
     """
 
     compact = re.sub(r"\s+", "", message)
+    # Do not let a previous health-risk question change an explicit visual or
+    # general-knowledge question into a product-risk answer.
+    if any(term in compact for term in ("什麼顏色", "甚麼顏色", "何種顏色", "顏色是")):
+        return "general_knowledge"
     if parse_consumption_amount(message):
         return "current_product_question"
+    if (
+        any(term in compact for term in ("適合", "可以給", "能給", "可不可以", "適不適合"))
+        and any(term in compact for term in ("小孩", "兒童", "幼兒", "嬰兒", "寶寶", "孕婦", "老人", "長輩"))
+    ):
+        return "product_suitability"
     if re.search(r"(?:半|一|兩|二|三|1|2|3)\s*(?:瓶|包|盒|罐|份)", message):
         return "current_product_question"
     if any(term in compact for term in ("今天", "現在", "最近", "最新", "今年", "現任", "更新", "公告")):
@@ -581,6 +617,8 @@ def _structured_fallback_answer(
         return "\n".join(lines)
     if intent == "allergen":
         return _allergen_answer(question, result)
+    if intent == "product_suitability":
+        return _suitability_answer(question, product or {})
     if intent == "health_risk":
         return _health_risk_answer(result, product)
     if intent == "nutrition_label":
@@ -731,6 +769,45 @@ def _current_product_answer(question: str, product: dict[str, Any]) -> str:
     )
 
 
+def _suitability_answer(question: str, product: dict[str, Any]) -> str:
+    """Answer audience-suitability questions from label facts and safe guidance."""
+
+    name = str(product.get("product_name") or "這項食品")
+    nutrition = product.get("nutrition", {})
+    nutrition = nutrition if isinstance(nutrition, dict) else {}
+    values = nutrition.get("values", {})
+    values = values if isinstance(values, dict) else {}
+    ingredients = "、".join(str(item) for item in product.get("ingredients", []))
+    combined = f"{name} {ingredients} {question}"
+    is_soy = any(term in combined for term in ("豆漿", "黃豆", "大豆", "soy"))
+    is_child = any(term in question for term in ("小孩", "兒童", "幼兒", "嬰兒", "寶寶"))
+
+    lines = [f"{name}是否適合食用，不能只由「無糖」宣稱判定。"]
+    if is_child:
+        if is_soy:
+            lines.append("若為 1 歲以上兒童，一般可依年齡、飲食需求及產品標示適量飲用；1 歲以下不應以一般豆漿取代母乳或嬰兒配方。")
+        else:
+            lines.append("兒童是否適合食用，仍要看年齡、成分、過敏原、份量及是否有特殊疾病；目前資料不足以直接判定適合或不適合。")
+    lines.append("無糖只代表糖含量或添加糖較低，不代表可以無限制飲用，也不等於完整的兒童營養品。")
+    if is_soy:
+        lines.append("此類產品通常涉及大豆；對大豆過敏者應避免，首次食用若出現蕁麻疹、嘔吐、喘或嘴唇腫脹，應立即停止並就醫。")
+    if values:
+        available = []
+        labels = {
+            "sugar_g": "糖",
+            "sodium_mg": "鈉",
+            "protein_g": "蛋白質",
+            "calories_kcal": "熱量",
+        }
+        for field, label in labels.items():
+            if values.get(field) is not None:
+                available.append(f"{label} {values[field]}")
+        if available:
+            lines.append("目前標示可供參考：" + "、".join(available) + "；實際份量仍應依兒童年齡與整體飲食調整。")
+    lines.append("若要精確判斷，請補充兒童年齡、飲用份量，以及是否有大豆／牛奶過敏或腎臟等疾病；嬰幼兒或有疾病者請先詢問兒科醫師或營養師。")
+    return "\n".join(lines)
+
+
 def _web_fallback_answer(payload: dict[str, Any]) -> str:
     """Show cleaned evidence metadata when no model is available to synthesize it."""
 
@@ -785,7 +862,7 @@ async def _llm_web_answer(
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0,
-            max_tokens=420,
+            max_tokens=260,
         )
         answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
         return answer or None
@@ -801,12 +878,16 @@ def _general_fallback_answer(question: str) -> str:
         return "Python 是一種高階、通用的程式語言，常用於網頁、資料分析、自動化與人工智慧。"
     if "日本首都" in question or "日本的首都是" in question:
         return "日本的首都是東京。"
+    if any(term in compact for term in ("中國位於哪裡", "中國在哪裡", "中國的位置")):
+        return "中國位於東亞，東臨太平洋。"
     if "2+2" in compact or "2＋2" in compact:
         return "2 + 2 = 4。"
     if "mcp" in compact and "什麼" in question:
         return "MCP（Model Context Protocol）是一套讓模型以一致介面使用外部工具與資料的協定。"
     if "機器學習" in question:
         return "機器學習是讓程式從資料中學習模式，進而進行預測、分類或生成的人工智慧方法。"
+    if "熱狗" in question and any(term in question for term in ("顏色", "色")):
+        return "熱狗常見為紅褐色或棕紅色；實際顏色會依品牌、肉品種類與烹調方式而不同。"
     if "地球離太陽" in question:
         return "地球與太陽平均距離約 1 億 4960 萬公里，也就是 1 天文單位。"
     return "目前沒有可用的 LLM 連線，無法可靠回答這個一般問題；請設定 LLM_PROVIDER 與模型後再試。"
@@ -820,23 +901,32 @@ async def _llm_general_answer(
     history: list[dict[str, Any]],
 ) -> str | None:
     try:
+        recent_history = [
+            item for item in history
+            if item.get("role") in {"user", "assistant"}
+        ][-4:]
         completion = await llm.chat.completions.create(
             model=model,
             messages=[
                 {
                     "role": "system",
-                    "content": "你是 FoodGuard 的一般問答助理。以繁體中文回答，不要聲稱已取得即時資料，也不要捏造來源。若問題涉及目前食品，優先使用輸入的產品資料。",
+                    "content": "你是 FoodGuard 的一般問答助理。以繁體中文回答，不要聲稱已取得即時資料，也不要捏造來源。若問題涉及目前食品，優先使用輸入的產品資料。若問題只詢問外觀、顏色、形狀或其他一般常識，只回答該問題，不要延伸成食品法規、致癌或健康風險判斷。",
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"question": question, "current_product": product, "recent_history": history[-6:]},
+                        {"question": question, "recent_history": recent_history},
                         ensure_ascii=False,
                     ),
                 },
             ],
             temperature=0,
-            max_tokens=420,
+            max_tokens=96,
+            **(
+                {"extra_body": {"keep_alive": _get_setting("OLLAMA_KEEP_ALIVE", "10m")}}
+                if _configured_provider() == "ollama"
+                else {}
+            ),
         )
         answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
         return answer or None
@@ -938,7 +1028,7 @@ async def _llm_followup_answer(
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0,
-            max_tokens=280,
+            max_tokens=180,
         )
         answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
         return answer or None
@@ -960,23 +1050,48 @@ def _sanitize_answer(answer: str, sources: list[dict[str, Any]]) -> str:
 def _deterministic_analysis_summary(
     product_data: dict[str, Any], task_results: dict[str, dict[str, Any]]
 ) -> str:
-    """Provide a safe local summary if an LLM is unavailable."""
+    """Provide a concise user-facing summary if an LLM is unavailable."""
 
     product_name = product_data.get("product_name") or "此食品"
     allergen = task_results.get("allergens", {}).get("result", {})
     nutrition = task_results.get("nutrition_label", {}).get("result", {})
     claim = task_results.get("nutrition_claim", {}).get("result", {})
     lines = [f"{product_name}的分析重點："]
-    lines.append(f"- {allergen.get('summary', NOT_ENOUGH_EVIDENCE)}")
-    lines.append(f"- {nutrition.get('summary', NOT_ENOUGH_EVIDENCE)}")
-    lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
+
+    detected = allergen.get("detected_allergens", [])
+    if detected:
+        categories = [str(item.get("category")) for item in detected if item.get("category")]
+        lines.append(f"- 成分中辨識到可能的過敏原：{'、'.join(categories)}；相關過敏者請留意。")
+    elif allergen.get("detection_status") == "not_detected":
+        lines.append("- 目前提供的成分中未辨識到列管過敏原；仍請以完整成分標示為準。")
+
+    missing = nutrition.get("missing_fields", [])
+    if missing:
+        lines.append(
+            f"- 營養標示已辨識部分欄位；尚未提供或無法辨識：{'、'.join(str(item) for item in missing)}。"
+            "這不代表食品沒有這些營養素。"
+        )
+    elif nutrition.get("status") == "pass":
+        lines.append("- 營養標示欄位已依目前資料完成辨識。")
+
+    claim_evaluation = claim.get("numeric_evaluation")
+    claim_name = claim.get("claim") or "、".join(claim.get("claims", []))
+    if isinstance(claim_evaluation, dict):
+        lines.append(
+            f"- 「{claim_name or '營養宣稱'}」的{claim_evaluation.get('basis', '標示基準')}數值為 "
+            f"{claim_evaluation.get('actual')}，{'符合' if claim_evaluation.get('met') else '不符合'}數值條件；"
+            "仍須一併符合其他標示規定。"
+        )
+    elif claim.get("status") not in {None, "not_applicable"}:
+        lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
+
     insights = task_results.get("nutrition_insights", {}).get("result", {})
     important = insights.get("important_nutrients", []) if isinstance(insights, dict) else []
     if important:
-        labels = {"calories_kcal": "熱量", "saturated_fat_g": "飽和脂肪", "sugar_g": "糖", "sodium_mg": "鈉", "protein_g": "蛋白質"}
-        lines.append("- 主動營養提醒：" + "、".join(labels.get(item, item) for item in important[:5]) + "；這些是值得納入整體攝取考量的標示項目，沒有自行套用高低門檻。")
+        labels = {"calories_kcal": "熱量", "saturated_fat_g": "飽和脂肪", "sugar_g": "糖", "sodium_mg": "鈉", "protein_g": "蛋白質", "fiber_g": "膳食纖維", "fat_g": "脂肪", "carbohydrate_g": "碳水化合物"}
+        lines.append("- 標示中可辨識的主要營養項目：" + "、".join(labels.get(item, item) for item in important[:5]) + "；請依每份大小與整體飲食評估。")
     health_risk = task_results.get("health_risk", {}).get("result", {})
-    if health_risk:
+    if health_risk.get("risk_topics"):
         lines.append(f"- 健康風險：{health_risk.get('summary', NOT_ENOUGH_EVIDENCE)}")
     return "\n".join(lines)
 
@@ -998,6 +1113,7 @@ class FoodGuardMCPClient:
         llm_client: ChatCompletionsClient | None = None,
         max_tool_rounds: int = 4,
         require_api_key: bool = True,
+        prefer_in_process: bool = False,
     ) -> None:
         api_key, configured_model, base_url = _load_settings(
             require_key=require_api_key and llm_client is None
@@ -1005,6 +1121,7 @@ class FoodGuardMCPClient:
         self.model = model or configured_model
         self.server_script = Path(server_script).resolve()
         self.max_tool_rounds = max_tool_rounds
+        self.prefer_in_process = prefer_in_process
         self.history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._mcp: Client | None = None
         self._tools: list[Any] = []
@@ -1012,6 +1129,7 @@ class FoodGuardMCPClient:
         self.transport_mode = "stdio"
         self.transport_fallback_reason: str | None = None
         self._llm = llm_client
+        self._llm_was_injected = llm_client is not None
         self.provider = _configured_provider(base_url)
         self.current_product: dict[str, Any] | None = None
         self.current_analysis: dict[str, Any] | None = None
@@ -1038,13 +1156,17 @@ class FoodGuardMCPClient:
         }
         self._last_health_risk_result: dict[str, Any] | None = None
         self._last_web_result: dict[str, Any] | None = None
-        if self._llm is None and api_key:
+        # Ollama exposes an OpenAI-compatible endpoint but does not require an
+        # OpenAI API key.  Use a placeholder credential so the OpenAI SDK can
+        # still construct its client; cloud providers continue to require a
+        # real key.
+        if self._llm is None and (api_key or self.provider == "ollama"):
             try:
                 timeout = float(_get_setting("OPENAI_TIMEOUT", "20"))
             except ValueError:
                 timeout = 20.0
             self._llm = AsyncOpenAI(
-                api_key=api_key,
+                api_key=api_key or "ollama",
                 base_url=base_url,
                 timeout=timeout,
                 max_retries=0,
@@ -1206,6 +1328,15 @@ class FoodGuardMCPClient:
         self.history.insert(insert_at, message)
 
     async def __aenter__(self) -> "FoodGuardMCPClient":
+        if self.prefer_in_process:
+            # Streamlit calls can reuse the same Python process and therefore
+            # reuse the cached document chunks. The registered functions are
+            # the exact MCP server tools; this only avoids spawning a fresh
+            # stdio subprocess for every browser question.
+            self._local_tools = self._load_local_tools()
+            self.transport_mode = "in_process"
+            await self.refresh_tools()
+            return self
         parameters = StdioServerParameters(
             command=sys.executable,
             args=[str(self.server_script)],
@@ -1313,7 +1444,13 @@ class FoodGuardMCPClient:
 
         self._last_llm_used = False
         fallback = _deterministic_analysis_summary(product_data, task_results)
-        if self._llm is None:
+        use_llm_summary = _get_setting("FOODGUARD_LLM_SUMMARY", "")
+        if not use_llm_summary:
+            # Local Ollama summaries add a second generation pass to every
+            # product submission. The deterministic result is authoritative
+            # and much faster; opt in when a prose summary is preferred.
+            use_llm_summary = "0" if self.provider == "ollama" else "1"
+        if self._llm is None or use_llm_summary.casefold() not in {"1", "true", "yes", "on"}:
             return fallback
 
         evidence_summary = _synthesize_payloads(list(task_results.values()), product_data)
@@ -1336,7 +1473,7 @@ class FoodGuardMCPClient:
                     },
                 ],
                 temperature=0,
-                max_tokens=350,
+                max_tokens=220,
             )
             answer = (getattr(completion.choices[0].message, "content", "") or "").strip()
             self._last_llm_used = bool(answer)
@@ -1364,12 +1501,20 @@ class FoodGuardMCPClient:
         self._last_previous_context = previous_users[-1] if previous_users else None
         contextual_query = _fallback_query(self.history, user_message)
         intent = _fallback_intent(user_message)
+        if intent == "general_knowledge" and _is_contextual_followup(user_message):
+            contextual_intent = _fallback_intent(contextual_query)
+            if contextual_intent != "general_knowledge":
+                intent = contextual_intent
         if self.consumption_context and (
             re.search(r"\d+\s*歲", user_message)
             or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
         ):
             intent = "consumption"
-        if intent in {"intake", "general_knowledge", "current_product_question"} and _fallback_intent(contextual_query) == "health_risk":
+        if (
+            _is_contextual_followup(user_message)
+            and intent in {"intake", "general_knowledge", "current_product_question"}
+            and _fallback_intent(contextual_query) == "health_risk"
+        ):
             intent = "health_risk"
         if intent == "current_product_question":
             # A stated amount is a deterministic scaling operation.  A simple
@@ -1434,6 +1579,8 @@ class FoodGuardMCPClient:
 
         if intent == "general_knowledge":
             answer = _general_fallback_answer(user_message)
+        elif intent == "product_suitability":
+            answer = _suitability_answer(user_message, self.current_product or {})
         elif intent == "intake":
             answer = _intake_clarification(self.current_product)
         elif intent == "current_product_question":
@@ -1609,7 +1756,19 @@ class FoodGuardMCPClient:
                         _collect_sources(disease_payload, sources)
                 if intent == "health_risk":
                     self._last_health_risk_result = copy.deepcopy(payload.get("result", {}))
-                if _needs_web_search(user_message, intent) and intent not in {"current_information", "web_search_required"}:
+                result_status = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+                evidence_is_missing = (
+                    result_status.get("regulation_evidence_status") == "insufficient"
+                    or result_status.get("status") == "insufficient_evidence"
+                )
+                should_supplement = (
+                    intent in {"allergen", "nutrition_label", "claim", "health_guidance", "health_risk"}
+                    and evidence_is_missing
+                )
+                if (
+                    (_needs_web_search(user_message, intent) or should_supplement)
+                    and intent not in {"current_information", "web_search_required"}
+                ):
                     web_arguments = {
                         "query": contextual_query,
                         "domains": _web_domains_for_question(contextual_query, intent),
@@ -1679,7 +1838,11 @@ class FoodGuardMCPClient:
                 answer_source = "mixed" if intent not in {"current_information", "web_search_required"} else "web"
         if intent == "general_knowledge" and self._llm is not None:
             generated = await _llm_general_answer(
-                self._llm, self.model, user_message, self.current_product or {}, self.history
+                self._llm,
+                self.model,
+                user_message,
+                self.current_product or {},
+                self.history if _is_contextual_followup(user_message) else [],
             )
             if generated:
                 answer = generated
@@ -1707,7 +1870,7 @@ class FoodGuardMCPClient:
             # The calculation is a deterministic product-label operation and
             # does not require a RAG source; only sanitize any model wording.
             answer = _sanitize_answer(answer, sources) or NOT_ENOUGH_EVIDENCE
-        elif intent in {"general_knowledge", "current_product_question", "current_information", "web_search_required"} and not sources:
+        elif intent in {"general_knowledge", "product_suitability", "current_product_question", "current_information", "web_search_required"} and not sources:
             answer = _sanitize_answer(answer, sources) or NOT_ENOUGH_EVIDENCE
         else:
             answer = _answer_with_sources(answer, sources)
@@ -1849,6 +2012,10 @@ class FoodGuardMCPClient:
         routed_intent = _fallback_intent(user_message)
         if routed_intent == "search":
             routed_intent = _fallback_intent(_fallback_query(self.history, user_message))
+        elif routed_intent == "general_knowledge" and _is_contextual_followup(user_message):
+            contextual_intent = _fallback_intent(_fallback_query(self.history, user_message))
+            if contextual_intent != "general_knowledge":
+                routed_intent = contextual_intent
         if routed_intent == "search" and self.consumption_context and any(
             term in user_message for term in ("占", "比例", "這些", "這次")
         ):
@@ -1873,6 +2040,7 @@ class FoodGuardMCPClient:
             "health_risk",
             "consumption",
             "current_product_question",
+            "product_suitability",
             "nutrition_reference",
             "intake",
             "current_information",
@@ -1887,13 +2055,32 @@ class FoodGuardMCPClient:
         # fallback merely because the question happens to mention a food.
         # Give the model a clean direct-answer turn with no MCP tools.
         if routed_intent == "general_knowledge":
+            known_answer = _general_fallback_answer(user_message)
+            if (
+                not self._llm_was_injected
+                and not known_answer.startswith("目前沒有可用的 LLM 連線")
+            ):
+                self.history.append({"role": "user", "content": user_message})
+                self.history.append({"role": "assistant", "content": known_answer})
+                return ClientResponse(
+                    answer=known_answer,
+                    sources=[],
+                    tool_calls=[],
+                    evidence_synthesis=synthesize_evidence([]),
+                    diagnostics=self._diagnostics(
+                        intent="general_knowledge",
+                        tool_calls=[],
+                        sources=[],
+                        answer_source="fallback",
+                    ),
+                )
             self.history.append({"role": "user", "content": user_message})
             answer = await _llm_general_answer(
                 self._llm,
                 self.model,
                 user_message,
                 self.current_product or {},
-                self.history,
+                self.history if _is_contextual_followup(user_message) else [],
             )
             answer = answer or _general_fallback_answer(user_message)
             self._last_llm_used = bool(answer)
@@ -1925,7 +2112,7 @@ class FoodGuardMCPClient:
                     tools=openai_tools,
                     tool_choice="auto",
                     temperature=0,
-                    max_tokens=500,
+                    max_tokens=300,
                 )
             except Exception as exc:
                 # Expired keys, quota errors and unavailable local models all

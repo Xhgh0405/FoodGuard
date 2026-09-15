@@ -29,6 +29,7 @@ from foodguard.rules import (
     analyse_allergens,
     analyse_nutrition_claim,
     analyse_nutrition_label,
+    evaluate_claim_rule,
 )
 from foodguard.web_search import fetch_web_page, search_web
 from rag import search as rag_search
@@ -136,7 +137,9 @@ def _with_evidence_guard(
         result["message"] = NOT_ENOUGH_EVIDENCE
         result["summary"] = NOT_ENOUGH_EVIDENCE
         result["reasoning"] = "已完成輸入整理，但沒有足夠的相關法規來源支持判斷。"
-        result["recommendations"] = ["請加入對應的官方法規文件後再重新分析。"]
+        result["recommendations"] = [
+            "請擴充本機官方資料庫，或開啟 Web Search 後再重新分析。"
+        ]
     return result
 
 
@@ -492,9 +495,54 @@ def check_nutrition_claim(
         top_k=3,
         extra_queries=extra_queries,
     )
-    result = _with_evidence_guard(
-        analyse_nutrition_claim(normalized_claim, nutrition, sources), sources
-    )
+    structured = evaluate_claim_rule(normalized_claim, nutrition)
+    rule_source = None
+    if structured and isinstance(structured.get("rule"), dict):
+        # The structured file is an official, versioned rule source. Keep it
+        # in the result even when the optional vector index has not been built.
+        # It is intentionally not added to `sources`: callers use an empty
+        # source list to distinguish missing RAG evidence.
+        rule = structured["rule"]
+        rule_source = {
+            "document": rule.get("source_document", "data/nutrition_claim_rules.json"),
+            "page": rule.get("source_page", "structured"),
+            "text": (
+                f"官方結構化規則：{rule.get('claim', normalized_claim)}；"
+                f"每100公克 {rule.get('operator', '')} {rule.get('threshold', {}).get('solid')}"
+                f"{rule.get('threshold_unit', '')}；每100毫升 {rule.get('operator', '')} "
+                f"{rule.get('threshold', {}).get('liquid')} {rule.get('threshold_unit', '')}。"
+            ),
+            "quote": "官方結構化營養宣稱規則",
+            "score": 1.0,
+            "knowledge_domain": "regulation",
+            "source_url": rule.get("source_url"),
+        }
+    base_result = analyse_nutrition_claim(normalized_claim, nutrition, sources)
+    if rule_source is not None:
+        base_result["structured_rule_source"] = rule_source
+        # A complete label can be compared against the versioned structured
+        # rule without RAG. Incomplete input remains insufficient and keeps
+        # the recommendation to add data or use Web Search.
+        result = base_result
+    else:
+        result = _with_evidence_guard(base_result, sources)
+    # If there is no local structured rule, supplement the answer with
+    # official web results when network search is enabled. This does not turn
+    # snippets into numeric legal conclusions; it only adds auditable leads.
+    if not structured:
+        web_result = search_web(
+            f"{normalized_claim} 食品營養宣稱 官方規定",
+            domains=["fda.gov.tw", "mohw.gov.tw"],
+            max_results=5,
+        )
+        web_sources = _web_sources(web_result)
+        if web_sources:
+            sources.extend(web_sources)
+            result["web_search_status"] = "supplemented"
+            result["recommendations"] = ["本機規則不足，以上已補充官方網站搜尋結果；正式判定仍需確認現行規範全文。"]
+        else:
+            result["web_search_status"] = web_result.get("status", "unavailable")
+            result["recommendations"] = ["請擴充本機官方資料庫，或開啟 Web Search 後再重新判讀。"]
     result.update({"query": query, "nutrition_data": nutrition})
     result["knowledge_domain"] = "regulation"
     return _response(result, sources, debug)

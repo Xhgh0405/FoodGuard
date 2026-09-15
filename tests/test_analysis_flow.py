@@ -1,5 +1,5 @@
 from foodguard.parsing import parse_product_data
-from foodguard.rules import analyse_allergens, analyse_nutrition_label
+from foodguard.rules import analyse_allergens, analyse_nutrition_claim, analyse_nutrition_label
 
 
 def test_sample_product_is_normalized_before_analysis() -> None:
@@ -40,3 +40,21 @@ def test_nutrition_label_comparison_uses_required_fields_from_sources() -> None:
 
     assert result["status"] == "warning"
     assert "糖" in result["missing_fields"]
+
+
+def test_structured_claim_rule_evaluates_high_protein_without_raw_chunk_regex() -> None:
+    nutrition = {
+        "serving_size": "100 毫升",
+        "nutrition_basis": {"amount": 100, "unit": "ml"},
+        "values": {"protein_g": 7.0},
+        "provided_fields": ["蛋白質"],
+    }
+    result = analyse_nutrition_claim(
+        "高蛋白",
+        nutrition,
+        [{"document": "official.pdf", "page": 7, "text": "官方營養宣稱來源", "score": 0.9}],
+    )
+
+    assert result["threshold"]["source_page"] == 7
+    assert result["numeric_evaluation"]["actual"] == 7
+    assert result["status"] == "pass"

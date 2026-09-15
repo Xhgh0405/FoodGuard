@@ -36,7 +36,8 @@ def _nutrient_field(claim: str) -> tuple[str, str] | None:
         (("膳食纖維", "高纖", "纖維"), "膳食纖維", "fiber_g"),
         (("蛋白質", "蛋白"), "蛋白質", "protein_g"),
         (("鈉",), "鈉", "sodium_mg"),
-        (("脂肪",), "脂肪", "fat_g"),
+        # 「低脂」是法規與包裝上常見的簡寫，不能只接受完整的「低脂肪」。
+        (("脂肪", "脂"), "脂肪", "fat_g"),
         (("糖",), "糖", "sugar_g"),
     )
     for terms, label, field in aliases:
@@ -91,6 +92,9 @@ def evaluate_claim_rule(claim: str, nutrition: dict[str, Any]) -> dict[str, Any]
     evaluation: dict[str, Any] = {
         "basis": "每100毫升" if form == "liquid" else "每100公克",
         "actual": normalized_actual,
+        "input_value": float(actual),
+        "input_amount": amount,
+        "input_unit": "ml" if form == "liquid" else "g",
         "threshold": float(threshold),
         "comparison": rule["operator"],
         "met": normalized_actual <= float(threshold) if rule["operator"] == "<=" else normalized_actual >= float(threshold),

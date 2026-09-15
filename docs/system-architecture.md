@@ -18,7 +18,10 @@ MCP Server Tools
 ## 分層責任
 
 - `app/`：Streamlit 頁面、輸入表單、結果與引用呈現。
-- `mcp/`：MCP Server tools 與 MCP Client transport/session 管理。
+- 根目錄 `mcp_server.py` / `mcp_client.py`：MCP Server tools 與 Client transport/session 管理；`mcp_runtime/` 僅保留結構目錄，避免遮蔽官方 SDK。
+- `foodguard/context.py`：follow-up amount parsing 與 deterministic consumption scaling。
+- `foodguard/memory.py`：SQLite session、product profile、analysis results、conversation history persistence。
+- `data/nutrition_claim_rules.json`：structured claim rules；數值判定不依賴 LLM 或 raw chunk regex。
 - `backend/`：PDF ingestion、chunk metadata、embedding/index、retrieval、規則引擎與資料模型。
 - `documents/`：人工放置且可追溯的 TFDA PDF；它是法規判斷的唯一來源。
 - `data/`：可重建的 FAISS index 與 metadata 產物，不存放秘密。

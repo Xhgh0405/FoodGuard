@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 import mcp_server
-from mcp_client import FoodGuardMCPClient, _fallback_intent
+from mcp_client import FoodGuardMCPClient, _fallback_intent, _is_contextual_followup
 
 
 def test_router_supports_general_and_volatile_intents() -> None:
@@ -15,6 +15,14 @@ def test_router_supports_general_and_volatile_intents() -> None:
     assert _fallback_intent("這瓶豆漿的糖是多少？") == "current_product_question"
     assert _fallback_intent("無糖標準是什麼？") == "food_regulation"
     assert _fallback_intent("加工肉有致癌風險嗎？") == "health_risk"
+    assert _fallback_intent("熱狗是什麼顏色的？") == "general_knowledge"
+
+
+def test_general_questions_are_not_contextual_food_followups() -> None:
+    assert _is_contextual_followup("元智大學是私立學校嗎？") is False
+    assert _is_contextual_followup("Python 是什麼？") is False
+    assert _is_contextual_followup("那糖呢？") is True
+    assert _is_contextual_followup("如果一個月吃一次呢？") is True
 
 
 @pytest.mark.anyio
@@ -30,6 +38,68 @@ async def test_general_question_has_offline_answer_without_food_refusal() -> Non
     assert "只能回答食品" not in response.answer
     assert response.diagnostics["intent"] == "general_knowledge"
     assert response.diagnostics["answer_mode"] == "fallback"
+
+
+@pytest.mark.anyio
+async def test_explicit_general_question_does_not_inherit_previous_health_context() -> None:
+    client = FoodGuardMCPClient(llm_client=None, require_api_key=False)
+    client._llm = None
+    client._mcp = object()
+    client.set_current_context(
+        {"product_name": "含丙烯醯胺食品", "ingredients": ["馬鈴薯"]}
+    )
+    client.history.extend(
+        [
+            {"role": "user", "content": "丙烯醯胺會致癌嗎？"},
+            {"role": "assistant", "content": "這是上一個健康風險問題的回答。"},
+        ]
+    )
+
+    response = await client.ask("元智大學是私立學校嗎？")
+
+    assert response.tool_calls == []
+    assert response.diagnostics["intent"] == "general_knowledge"
+    assert "致癌" not in response.answer
+    assert "丙烯醯胺" not in response.answer
+
+
+@pytest.mark.anyio
+async def test_general_llm_turn_receives_no_food_history() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Completions:
+        async def create(self, **kwargs: Any):
+            calls.append(kwargs)
+            message = type("Message", (), {"content": "是，元智大學是私立大學。"})()
+            return type("Completion", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+    fake_llm = type(
+        "FakeLLM",
+        (),
+        {"chat": type("Chat", (), {"completions": Completions()})()},
+    )()
+    client = FoodGuardMCPClient(llm_client=fake_llm, require_api_key=False)
+    client._mcp = object()
+    client.set_current_context(
+        {"product_name": "含丙烯醯胺食品", "ingredients": ["馬鈴薯"]}
+    )
+    client.history.extend(
+        [
+            {"role": "user", "content": "丙烯醯胺會致癌嗎？"},
+            {"role": "assistant", "content": "上一個食品健康風險回答。"},
+        ]
+    )
+
+    response = await client.ask("元智大學是私立學校嗎？")
+
+    assert response.diagnostics["intent"] == "general_knowledge"
+    assert response.answer == "是，元智大學是私立大學。"
+    assert calls
+    assert all(
+        message.get("content") not in {"丙烯醯胺會致癌嗎？", "上一個食品健康風險回答。"}
+        for message in calls[0]["messages"]
+        if message.get("role") in {"user", "assistant"}
+    )
 
 
 @pytest.mark.anyio

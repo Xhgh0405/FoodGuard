@@ -9,7 +9,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import hashlib
+import html
+import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Coroutine
 
@@ -58,7 +62,7 @@ def _run_async(coroutine: Coroutine[Any, Any, Any]) -> Any:
 
 async def _run_analysis(product_data: dict[str, Any]) -> dict[str, Any]:
     try:
-        async with FoodGuardMCPClient(require_api_key=False) as client:
+        async with FoodGuardMCPClient(require_api_key=False, prefer_in_process=True) as client:
             return await client.analyze_product(product_data)
     except Exception as exc:
         # Keep Streamlit usable even if the stdio task group fails while the
@@ -98,7 +102,7 @@ async def _run_chat(
     current_product: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
 ) -> tuple[ClientResponse, list[dict[str, Any]]]:
-    async with FoodGuardMCPClient(require_api_key=False) as client:
+    async with FoodGuardMCPClient(require_api_key=False, prefer_in_process=True) as client:
         client.history = copy.deepcopy(history)
         client.set_current_context(current_product, analysis)
         response = await client.ask(question)
@@ -308,6 +312,19 @@ def _source_title(document: Any) -> str:
 
 
 def _source_excerpt(text: Any, max_chars: int = 260) -> str:
+    if isinstance(text, dict):
+        text = text.get("relevant_excerpt") or text.get("text") or text.get("quote") or ""
+    if isinstance(text, str):
+        # Some older saved results contain a compact source record encoded as
+        # JSON in the excerpt field.  Unwrap it instead of showing metadata.
+        candidate = text.strip()
+        if candidate.startswith("{"):
+            try:
+                decoded = json.loads(candidate)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                text = decoded.get("relevant_excerpt") or decoded.get("text") or decoded.get("quote") or ""
     excerpt = " ".join(str(text).split())
     return excerpt if len(excerpt) <= max_chars else excerpt[:max_chars].rstrip() + "…"
 
@@ -323,43 +340,12 @@ def _render_sources(
         for index, source in enumerate(sources[:max_sources], start=1):
             st.markdown(f"**{index:02d} · {_source_title(source.get('document', '未提供文件名稱'))}**")
             st.caption(f"第 {source.get('page', '—')} 頁")
-            excerpt = source.get("relevant_excerpt", source.get("text", ""))
+            excerpt = source.get("relevant_excerpt") or source.get("text") or source.get("quote", "")
             st.markdown(f"**相關內容：** {_source_excerpt(excerpt)}")
             if source.get("source_url"):
                 st.markdown(f"[開啟官方來源]({source['source_url']})")
             if index < min(len(sources), max_sources):
                 st.divider()
-
-
-def _render_debug(
-    payloads: dict[str, dict[str, Any]],
-    tool_calls: list[str] | None = None,
-    diagnostics: dict[str, Any] | None = None,
-) -> None:
-    with st.expander("開發者資訊", expanded=False):
-        st.caption("此區僅供開發除錯；原始 chunk、檢索分數與 MCP 回應不會顯示在一般回答中。")
-        if tool_calls:
-            st.markdown("**MCP 工具呼叫**")
-            st.write(" → ".join(tool_calls))
-        if diagnostics:
-            st.markdown("**Pipeline diagnostics**")
-            st.json(diagnostics)
-        for name, payload in payloads.items():
-            st.markdown(f"**{name}**")
-            debug = payload.get("debug_evidence", {})
-            if debug:
-                st.json(debug)
-            st.json({
-                "result": payload.get("result", {}),
-                "sources": [
-                        {
-                            key: source.get(key)
-                            for key in ("document", "page", "score", "knowledge_domain", "source_url", "topic")
-                        }
-                    for source in payload.get("sources", [])
-                    if isinstance(source, dict)
-                ],
-            })
 
 
 def _render_result_card(
@@ -371,6 +357,11 @@ def _render_result_card(
         detected_count = len(result.get("detected_allergens", []))
         status_text, status_class = f"⚠️ 已辨識到 {detected_count} 類潛在過敏原", "warn"
     sources = payload.get("sources", [])
+    result = payload.get("result", {})
+    structured_source = result.get("structured_rule_source")
+    display_sources = sources
+    if not display_sources and isinstance(structured_source, dict):
+        display_sources = [structured_source]
     with st.container(border=True):
         st.markdown(
             f'<div class="result-title">{display_title}</div>',
@@ -398,9 +389,9 @@ def _render_result_card(
             st.markdown("**判讀建議：**")
             for recommendation in recommendations:
                 st.markdown(f"- {recommendation}")
-        if sources:
-            st.markdown(f'<div class="source-count">{len(sources)} 筆資料來源</div>', unsafe_allow_html=True)
-        _render_sources(sources, key)
+        if display_sources:
+            st.markdown(f'<div class="source-count">{len(display_sources)} 筆資料來源</div>', unsafe_allow_html=True)
+        _render_sources(display_sources, key)
 
 
 def _allergen_details(result: dict[str, Any]) -> list[str]:
@@ -430,7 +421,27 @@ def _claim_details(result: dict[str, Any]) -> list[str]:
         actual = evaluation.get("actual")
         threshold = evaluation.get("threshold")
         basis = evaluation.get("basis", "來源基準")
-        return [f"{basis}：輸入值 {actual:g}，來源條件 {evaluation.get('comparison')} {threshold:g}。"]
+        input_value = evaluation.get("input_value")
+        input_amount = evaluation.get("input_amount")
+        input_unit = evaluation.get("input_unit")
+        conversion = ""
+        if all(isinstance(item, (int, float)) for item in (input_value, input_amount)):
+            conversion = f"原標示每{input_amount:g}{input_unit}為 {input_value:g}，換算後 "
+        return [f"{conversion}{basis} {actual:g}，來源條件 {evaluation.get('comparison')} {threshold:g}。"]
+    threshold_rule = result.get("threshold")
+    if isinstance(threshold_rule, dict) and isinstance(threshold_rule.get("threshold"), dict):
+        nutrient = threshold_rule.get("nutrient") or "營養素"
+        unit = threshold_rule.get("threshold_unit") or ""
+        comparison = threshold_rule.get("operator") or ""
+        solid = threshold_rule["threshold"].get("solid")
+        liquid = threshold_rule["threshold"].get("liquid")
+        conditions = []
+        if solid is not None:
+            conditions.append(f"每100公克 {comparison} {solid:g}{unit}")
+        if liquid is not None:
+            conditions.append(f"每100毫升 {comparison} {liquid:g}{unit}")
+        if conditions:
+            return [f"官方規則（{nutrient}）：" + "；".join(conditions) + "。"]
     return [f"宣稱：{result.get('claim') or '未提供'}"]
 
 
@@ -474,18 +485,48 @@ def _nutrition_insight_details(result: dict[str, Any]) -> list[str]:
 
 
 def _initialise_state() -> None:
-    if "session_id" not in st.session_state:
-        session_id = None
-        try:
-            session_id = st.query_params.get("session_id")
-        except Exception:
-            pass
-        st.session_state.session_id = session_id or new_session_id()
+    # Query parameters survive Streamlit reruns and browser restarts, while
+    # st.session_state does not.  Re-load when a user opens another saved URL
+    # in the same browser session as well.
+    requested_session_id = None
+    try:
+        requested_session_id = st.query_params.get("session_id")
+    except Exception:
+        pass
+    if isinstance(requested_session_id, list):
+        requested_session_id = requested_session_id[0] if requested_session_id else None
+    if requested_session_id:
+        requested_session_id = str(requested_session_id).strip()
+
+    current_session_id = st.session_state.get("session_id")
+    session_changed = (
+        current_session_id is None
+        or (requested_session_id and requested_session_id != current_session_id)
+    )
+    if session_changed:
+        # Remove only FoodGuard-owned state so unrelated Streamlit state is not
+        # disturbed when a saved URL is opened.
+        for key in (
+            "session_id",
+            "analysis",
+            "current_product",
+            "consumption_context",
+            "analysis_product_name",
+            "chat_history",
+            "chat_messages",
+            "last_chat_diagnostics",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state.session_id = requested_session_id or new_session_id()
         try:
             st.query_params["session_id"] = st.session_state.session_id
         except Exception:
             pass
         saved = load_session(st.session_state.session_id)
+        # Create the row immediately.  A copied URL remains valid even if the
+        # user has not submitted the first product yet.
+        if saved is None:
+            save_session(st.session_state.session_id)
     else:
         saved = None
     if "analysis" not in st.session_state:
@@ -511,6 +552,10 @@ def _initialise_state() -> None:
             message for message in st.session_state.chat_history
             if message.get("role") in {"user", "assistant"} and message.get("content")
         ]
+    # Re-create the standalone copy when an existing URL is opened after a
+    # restart, so the offline file is always available next to the database.
+    if st.session_state.get("analysis"):
+        _persist_state()
 
 
 def _persist_state() -> None:
@@ -520,28 +565,129 @@ def _persist_state() -> None:
         analysis_results=st.session_state.analysis or {},
         conversation_history=st.session_state.chat_history,
     )
+    _write_offline_report()
+
+
+def _offline_report_path(session_id: str) -> Path:
+    """Return a stable, local path for a session's standalone report."""
+    configured = os.getenv("FOODGUARD_REPORTS_DIR", "data/reports")
+    reports_dir = Path(configured)
+    if not reports_dir.is_absolute():
+        reports_dir = Path(__file__).resolve().parent / reports_dir
+
+    # Session IDs generated by FoodGuard are hex strings.  Hash unexpected
+    # query-param values so a URL can never escape the reports directory while
+    # still producing a deterministic filename.
+    safe_id = str(session_id).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", safe_id):
+        safe_id = hashlib.sha256(safe_id.encode("utf-8")).hexdigest()
+    return reports_dir / f"foodguard-{safe_id}.html"
+
+
+def _write_offline_report() -> None:
+    """Keep a report on disk so it remains usable when the app is stopped."""
+    if not st.session_state.get("analysis"):
+        return
+    report_path = _offline_report_path(st.session_state.session_id)
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(_offline_report_html(), encoding="utf-8")
+        st.session_state.offline_report_path = str(report_path)
+    except OSError:
+        # The download button remains available even if the configured report
+        # directory is read-only (for example in a hosted deployment).
+        st.session_state.offline_report_path = None
+
+
+def _offline_report_html() -> str:
+    """Build a self-contained report that can be opened without Streamlit."""
+    analysis = st.session_state.analysis or {}
+    product = analysis.get("product_data") or {}
+    chat = [
+        message
+        for message in st.session_state.get("chat_history", [])
+        if message.get("role") in {"user", "assistant"} and message.get("content")
+    ]
+
+    def block(title: str, value: Any) -> str:
+        content = html.escape(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+        return f"<section><h2>{html.escape(title)}</h2><pre>{content}</pre></section>"
+
+    def public_value(value: Any) -> Any:
+        """Remove internal diagnostics from the user-facing offline report."""
+        hidden_keys = {
+            "debug_evidence",
+            "diagnostics",
+            "evidence_synthesis",
+            "tool_calls",
+        }
+        if isinstance(value, dict):
+            return {
+                key: public_value(item)
+                for key, item in value.items()
+                if key not in hidden_keys
+            }
+        if isinstance(value, list):
+            return [public_value(item) for item in value]
+        return value
+
+    public_analysis = public_value(analysis)
+    product_name = html.escape(str(product.get("product_name") or "未命名產品"))
+    summary = html.escape(str(analysis.get("overall_summary") or "目前找不到足夠依據"))
+    return f"""<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>食標通離線報告 - {product_name}</title>
+<style>
+body {{ margin: 0; padding: 32px; color: #173b38; background: #f5f8f6;
+  font-family: system-ui, -apple-system, "Microsoft JhengHei", sans-serif; line-height: 1.7; }}
+main {{ max-width: 960px; margin: auto; background: white; padding: 28px 34px;
+  border-radius: 16px; box-shadow: 0 4px 24px #173b3818; }}
+h1 {{ margin-top: 0; }} h2 {{ margin-bottom: 8px; color: #0d5049; }}
+.summary {{ padding: 16px; background: #eaf4f1; border-radius: 10px; white-space: pre-wrap; }}
+pre {{ padding: 16px; overflow-x: auto; background: #f4f7f6; border-radius: 8px; }}
+.meta {{ color: #58706c; font-size: .9rem; }}
+</style></head><body><main>
+<h1>食標通 LabelCheck｜離線報告</h1>
+<h2>食品：{product_name}</h2><div class="summary">{summary}</div>
+{block("產品資料", product)}
+{block("完整分析結果", public_analysis)}
+{block("問答紀錄", chat) if chat else ""}
+</main></body></html>"""
 
 
 def _render_product_view() -> None:
     st.markdown('<div class="section-kicker">食品判讀</div>', unsafe_allow_html=True)
     st.header("輸入產品資訊")
+    saved_product = st.session_state.get("current_product") or {}
+    saved_nutrition = saved_product.get("nutrition", {})
+    if not isinstance(saved_nutrition, dict):
+        saved_nutrition = {}
     with st.container(border=True):
         left, right = st.columns([1.65, 1], gap="large")
         with left:
             with st.form("analysis_form", clear_on_submit=False):
-                product_name = st.text_input("品名", placeholder="例如：重乳酪蛋糕")
+                product_name = st.text_input(
+                    "品名",
+                    value=str(saved_product.get("product_name") or ""),
+                    placeholder="例如：重乳酪蛋糕",
+                )
                 ingredients = st.text_area(
                     "成分內容",
                     height=115,
+                    value="、".join(str(item) for item in saved_product.get("ingredients", [])),
                     placeholder="例如：牛奶、砂糖、可可粉、大豆蛋白、乳化劑",
                 )
                 nutrition_text = st.text_area(
                     "營養標示",
                     height=185,
+                    value=str(saved_nutrition.get("raw_text") or ""),
                     placeholder="例如：\n每一份量 100 公克\n本包裝含 1 份\n熱量 345 大卡\n蛋白質 7.2 公克\n脂肪 26.5 公克\n……",
                 )
                 claim = st.text_input(
-                    "營養宣稱", placeholder="例如：高蛋白、低鈉、無糖；沒有宣稱請填：無"
+                    "營養宣稱",
+                    value="、".join(str(item) for item in saved_product.get("claims", [])),
+                    placeholder="例如：高蛋白、低鈉、無糖；沒有宣稱請填：無",
                 )
                 submitted = st.form_submit_button("開始判讀  →", use_container_width=True)
         with right:
@@ -590,6 +736,18 @@ def _render_product_view() -> None:
     st.caption(f"目前食品：{product_label}")
     with st.container(border=True):
         st.markdown(analysis.get("overall_summary", "目前找不到足夠依據"))
+    st.download_button(
+        "下載離線報告（關機後仍可開啟）",
+        data=_offline_report_html(),
+        file_name=f"foodguard-{st.session_state.session_id}.html",
+        mime="text/html",
+        help="下載後可直接用瀏覽器開啟，不需要啟動 FoodGuard。",
+    )
+    if st.session_state.get("offline_report_path"):
+        st.caption(
+            "已同步保存離線報告；關閉電腦後可直接開啟："
+            f"{st.session_state.offline_report_path}"
+        )
 
     st.markdown('<div class="section-kicker">分析結果</div>', unsafe_allow_html=True)
     st.header("分析結果")
@@ -618,17 +776,6 @@ def _render_product_view() -> None:
             "其他健康風險資訊",
         )
 
-    _render_debug(
-        {
-            **{key: analysis[key] for key, _label, _builder in task_labels},
-            **({"nutrition_insights": analysis["nutrition_insights"]} if analysis.get("nutrition_insights") else {}),
-            **({"health_risk": analysis["health_risk"]} if analysis.get("health_risk") else {}),
-        },
-        analysis.get("tool_calls", []),
-        analysis.get("diagnostics"),
-    )
-
-
     _render_chat_section()
 
 
@@ -637,6 +784,12 @@ def _render_chat_section() -> None:
     st.header("食品與規範問答")
     product_label = st.session_state.analysis_product_name or "目前食品"
     st.caption(f"目前食品：{product_label}")
+    saved_message_count = sum(
+        1
+        for message in st.session_state.get("chat_history", [])
+        if message.get("role") in {"user", "assistant"} and message.get("content")
+    )
+    st.caption(f"本次對話已保存 {saved_message_count} 則訊息；紀錄綁定目前的 session 連結。")
     st.caption("可以詢問目前食品、分析結果、食品規範、一般知識或需要查證的最新資訊。")
     with st.expander("目前可查的法規主題", expanded=False):
         st.markdown(
@@ -688,19 +841,31 @@ def _render_chat_section() -> None:
                             product_data = st.session_state.analysis.get("product_data")
                             if isinstance(product_data, dict):
                                 product_data["consumption_context"] = copy.deepcopy(consumption)
-                    _persist_state()
                     st.markdown(response.answer)
                     if response.sources:
                         _render_sources(response.sources, "chat-sources")
-                    _render_debug(
-                        {},
-                        response.tool_calls,
-                        response.diagnostics,
-                    )
                     st.session_state.chat_messages.append(
                         {"role": "assistant", "content": response.answer}
                     )
+                    # Persist after appending the assistant message so a
+                    # browser restart does not lose the latest reply.
+                    _persist_state()
                 except Exception as exc:
+                    # Keep the user's question even when the model/tool call
+                    # fails before _run_chat can return its updated history.
+                    last_user = next(
+                        (
+                            message
+                            for message in reversed(st.session_state.chat_history)
+                            if message.get("role") == "user"
+                        ),
+                        None,
+                    )
+                    if not last_user or last_user.get("content") != question:
+                        st.session_state.chat_history.append(
+                            {"role": "user", "content": question}
+                        )
+                    _persist_state()
                     st.error(f"問答失敗：{exc}")
 
 

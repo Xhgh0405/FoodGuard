@@ -93,6 +93,24 @@ def test_package_and_half_package_require_package_metadata() -> None:
     assert parse_portion("喝一瓶", product["nutrition"]) is None
 
 
+def test_label_punctuation_and_approximate_package_count_support_package_scaling() -> None:
+    product = parse_product_data(
+        "餅乾",
+        "",
+        "每一份量：30公克\n本包裝：約 5 份\n熱量：160 大卡\n鈉：150 毫克",
+        "",
+    )
+
+    portion = parse_portion("吃一包", product["nutrition"])
+
+    assert portion == {
+        "amount": 150.0,
+        "unit": "g",
+        "raw": "一包",
+        "source": "package",
+    }
+
+
 def test_qa39_proactive_analysis_reports_all_label_values_without_threshold_claims() -> None:
     insight = build_nutrition_insights(soy_product())
     assert {"protein_g", "sugar_g", "sodium_mg"}.issubset(insight["important_nutrients"])

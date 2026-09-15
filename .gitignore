@@ -39,6 +39,13 @@ Thumbs.db
 .cache/
 .faiss/
 data/vector_store/
+data/foodguard_memory.db
+data/reports/
+
+# Test-run temporary directories
+pytest-cache-files-*/
+.pytest-basetemp*/
+.pytest-temp*/
 
 # Build outputs
 build/

@@ -17,7 +17,28 @@ ALLERGEN_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("甲殼類及其製品", ("蝦", "蟹", "甲殼類", "蝦米", "蝦皮")),
     ("芒果及其製品", ("芒果",)),
     ("花生及其製品", ("花生",)),
-    ("牛奶、羊奶及其製品", ("奶油乳酪", "乳酪", "起司", "鮮奶油", "牛奶", "鮮奶", "羊奶", "奶油", "奶粉", "乳粉")),
+    (
+        "牛奶、羊奶及其製品",
+        (
+            "奶油乳酪",
+            "乳酪",
+            "起司",
+            "鮮奶油",
+            "牛奶",
+            "牛乳",
+            "鮮奶",
+            "生乳",
+            "羊奶",
+            "奶油",
+            "奶粉",
+            "乳粉",
+            "乳製品",
+            "乳類",
+            "奶類",
+            "含乳",
+            "乳清",
+        ),
+    ),
     ("蛋及其製品", ("雞蛋", "鴨蛋", "蛋黃", "蛋白", "全蛋", "蛋粉", "蛋")),
     ("堅果類及其製品", ("堅果", "杏仁", "核桃", "腰果", "榛果", "開心果", "夏威夷豆")),
     ("芝麻及其製品", ("芝麻",)),
@@ -120,7 +141,10 @@ def analyse_nutrition_label(
         summary = "目前找不到足夠依據確認營養標示的完整要求。"
     elif missing:
         status = "warning"
-        summary = f"目前可辨識到 {len(missing)} 個可能缺少的主要欄位：{', '.join(missing)}。"
+        summary = (
+            f"營養標示目前已辨識 {len(provided)} 項；尚未提供或無法辨識 "
+            f"{len(missing)} 項：{', '.join(missing)}。未提供不代表食品沒有這些營養素。"
+        )
     else:
         status = "pass"
         summary = "依目前來源可辨識的主要欄位均已提供；格式、單位與實際包裝仍需另外確認。"
@@ -204,7 +228,13 @@ def analyse_nutrition_claim(
         }
 
     evidence = list(evidence)
-    if not evidence:
+    # Evaluate the versioned structured rule before requiring text evidence.
+    # This allows complete label data to be judged even when the optional
+    # vector index is unavailable, while incomplete input remains explicitly
+    # marked as insufficient.
+    structured = evaluate_claim_rule(claims[0], nutrition)
+    evaluation: dict[str, Any] | None = structured.get("evaluation") if structured else None
+    if not evidence and not structured:
         return {
             "status": "insufficient_evidence",
             "regulation_evidence_status": "insufficient",
@@ -216,21 +246,36 @@ def analyse_nutrition_claim(
             "claims": claims,
         }
 
-    structured = evaluate_claim_rule(claims[0], nutrition)
-    evaluation: dict[str, Any] | None = structured.get("evaluation") if structured else None
+    # Keep the structured rule even when the user's label is missing a value
+    # or serving basis.  The rule itself is still useful evidence and lets the
+    # UI explain exactly what information is missing.
     threshold = (
         structured.get("rule")
-        if structured and evaluation
+        if structured
         else _extract_high_threshold(claims[0], evidence)
     )
-    status = "warning"
+    status = "insufficient_evidence" if not evidence else "warning"
     summary = "已找到營養宣稱相關依據，但目前無法從來源完整抽取適用條件。"
+    recommendations = ["若產品型態、基準量或宣稱文字不同，請再確認適用條件。"]
     if structured and evaluation:
         status = "pass" if evaluation["met"] else "fail"
+        comparison = evaluation.get("comparison", "")
         summary = (
-            f"依結構化官方規則的{evaluation['basis']}條件，數值比較結果為"
-            f"{'達到' if evaluation['met'] else '未達到'}來源條件。"
+            f"「{claims[0]}」的{evaluation['basis']}數值為 {evaluation['actual']}，"
+            f"與官方門檻 {comparison} {evaluation['threshold']} 比較後，"
+            f"{ '符合' if evaluation['met'] else '不符合' }數值條件；仍須一併符合其他標示規定。"
         )
+    elif structured:
+        rule = structured.get("rule", {})
+        field = rule.get("field", "對應營養素")
+        values = nutrition.get("values", {})
+        actual = values.get(field) if isinstance(values, dict) else None
+        if actual is None:
+            summary = f"「{claims[0]}」目前缺少「{rule.get('nutrient', field)}」數值，因此暫時無法完成判定。"
+            recommendations = [f"請補充營養標示中的「{rule.get('nutrient', field)}」數值。"]
+        else:
+            summary = "目前已有營養數值，但缺少每份的公克／毫升基準量，暫時無法換算判定。"
+            recommendations = ["請補充每一份量及單位（公克或毫升），才能依每100公克／毫升判讀。"]
     elif threshold and "solid_threshold" in threshold:
         values = nutrition.get("values", {})
         actual = values.get(threshold["field"])
@@ -257,13 +302,14 @@ def analyse_nutrition_claim(
         if evaluation is not None:
             status = "pass" if evaluation["met"] else "fail"
             summary = (
-                f"依來源抽取的{evaluation['basis']}條件，數值比較結果為"
-                f"{'達到' if evaluation['met'] else '未達到'}來源條件。"
+                f"「{claims[0]}」的{evaluation['basis']}數值為 {evaluation['actual']}，"
+                f"與來源門檻 {evaluation['comparison']} {evaluation['threshold']} 比較後，"
+                f"{ '符合' if evaluation['met'] else '不符合' }數值條件。"
             )
 
     return {
         "status": status,
-        "regulation_evidence_status": "sufficient" if evidence else "insufficient",
+        "regulation_evidence_status": "sufficient" if evidence or (structured and evaluation) else "insufficient",
         "title": "營養宣稱",
         "summary": summary,
         "findings": [{"claim": item, "evaluation": evaluation} for item in claims],
@@ -272,5 +318,5 @@ def analyse_nutrition_claim(
         "threshold": threshold,
         "numeric_evaluation": evaluation,
         "reasoning": "先辨識宣稱，再只使用來源中可抽取的條件進行數值比較。",
-        "recommendations": ["若產品型態、基準量或宣稱文字不同，請再確認適用條件。"],
+        "recommendations": recommendations,
     }
