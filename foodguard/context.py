@@ -11,6 +11,11 @@ AMOUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
+STANDARD_AMOUNT_RE = re.compile(
+    r"(?<![\d.])([0-9]+(?:\.[0-9]+)?)\s*(µg|μg|ug|微克|mg|毫克|g|公克|克|kg|公斤|ml|毫升|l|公升|升|kcal|大卡)(?![a-z])",
+    re.IGNORECASE,
+)
+
 PIECE_AMOUNT_RE = re.compile(
     r"(?<![\d.])([0-9]+(?:\.[0-9]+)?|[一二兩三四五六七八九十百]+)\s*(根|支|瓶|罐|份|片|顆|個)(?!\w)"
 )
@@ -105,16 +110,22 @@ def parse_exposure_context(
 def parse_consumption_amount(message: str) -> dict[str, Any] | None:
     """Parse an explicit amount from a follow-up, without guessing omitted units."""
 
-    match = AMOUNT_RE.search(str(message or ""))
+    match = STANDARD_AMOUNT_RE.search(str(message or "")) or AMOUNT_RE.search(str(message or ""))
     if not match:
         return None
     unit = match.group(2).lower()
-    if unit in {"l"}:
+    if unit in {"l", "公升", "升"}:
         amount, normalized = float(match.group(1)) * 1000, "ml"
     elif unit in {"kg", "公斤"}:
         amount, normalized = float(match.group(1)) * 1000, "g"
     elif unit in {"毫升", "ml"}:
         amount, normalized = float(match.group(1)), "ml"
+    elif unit in {"mg", "毫克"}:
+        amount, normalized = float(match.group(1)), "mg"
+    elif unit in {"µg", "μg", "ug", "微克"}:
+        amount, normalized = float(match.group(1)), "µg"
+    elif unit in {"kcal", "大卡"}:
+        amount, normalized = float(match.group(1)), "kcal"
     else:
         amount, normalized = float(match.group(1)), "g"
     return {"amount": amount, "unit": normalized, "raw": match.group(0)}
@@ -128,7 +139,17 @@ def calculate_consumption_nutrients(
     basis = nutrition.get("nutrition_basis", {}) if isinstance(nutrition, dict) else {}
     basis_amount = basis.get("amount") if isinstance(basis, dict) else None
     basis_unit = basis.get("unit") if isinstance(basis, dict) else None
-    if not basis_amount or not basis_unit or str(basis_unit).lower() != str(unit).lower():
+    unit_factors = {
+        "g": ("g", 1.0), "公克": ("g", 1.0), "克": ("g", 1.0),
+        "kg": ("g", 1000.0), "公斤": ("g", 1000.0),
+        "mg": ("g", 0.001), "毫克": ("g", 0.001),
+        "µg": ("g", 0.000001), "μg": ("g", 0.000001), "ug": ("g", 0.000001), "微克": ("g", 0.000001),
+        "ml": ("ml", 1.0), "毫升": ("ml", 1.0), "l": ("ml", 1000.0), "公升": ("ml", 1000.0), "升": ("ml", 1000.0),
+        "kcal": ("kcal", 1.0), "大卡": ("kcal", 1.0),
+    }
+    basis_factor = unit_factors.get(str(basis_unit).lower()) if basis_unit else None
+    amount_factor = unit_factors.get(str(unit).lower())
+    if not basis_amount or not basis_factor or not amount_factor or basis_factor[0] != amount_factor[0]:
         return {
             "status": "insufficient_input",
             "message": "需要知道營養標示的基準量與消費量使用相同單位，才能換算。",
@@ -136,7 +157,7 @@ def calculate_consumption_nutrients(
             "unit": unit,
             "scaled_values": {},
         }
-    multiplier = float(amount) / float(basis_amount)
+    multiplier = (float(amount) * amount_factor[1]) / (float(basis_amount) * basis_factor[1])
     values = nutrition.get("values", {}) if isinstance(nutrition, dict) else {}
     scaled = {
         field: round(float(value) * multiplier, 4)

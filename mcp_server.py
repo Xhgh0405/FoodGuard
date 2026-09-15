@@ -17,6 +17,13 @@ from foodguard.health_risk import (
     detect_health_risk_topics,
     health_risk_sources,
 )
+from foodguard.nutrition_insights import (
+    build_nutrition_insights,
+    lookup_dri,
+    parse_active_nutrient,
+    parse_portion,
+    parse_user_profile,
+)
 from foodguard.parsing import parse_claims, parse_ingredients, parse_nutrition
 from foodguard.rules import (
     analyse_allergens,
@@ -296,6 +303,68 @@ def calculate_consumption_nutrients(
     result["title"] = "消費量營養換算"
     result["reasoning"] = "以標示基準量與使用者明確提供的消費量做比例換算，不推定個人安全上限。"
     return _response(result, [], {"calculation": "deterministic", "source_count": 0})
+
+
+@mcp.tool(
+    name="lookup_dri_reference",
+    description="Look up an official structured Taiwan DRIs reference without inventing a demographic value.",
+)
+def lookup_dri_reference(
+    nutrient: str, user_profile: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    result = lookup_dri(nutrient, user_profile)
+    result["knowledge_domain"] = "nutrition_reference"
+    return _response(
+        result,
+        [
+            {
+                "document": result.get("source", "data/dri_references.json"),
+                "page": "structured",
+                "text": "Official structured Taiwan DRIs record",
+                "quote": "Official structured Taiwan DRIs record",
+                "score": 1.0,
+                "knowledge_domain": "nutrition_reference",
+                "source_url": "https://www.hpa.gov.tw/Pages/Detail.aspx?nodeid=4248&pid=12285",
+            }
+        ],
+        {"lookup": "data/dri_references.json", "deterministic": True},
+    )
+
+
+@mcp.tool(
+    name="analyze_nutrition_insights",
+    description="Calculate scaled intake, official DRI comparisons and proactive nutrition insights deterministically.",
+)
+def analyze_nutrition_insights(
+    product_context: dict[str, Any],
+    consumption_context: dict[str, Any] | None = None,
+    user_profile: dict[str, Any] | None = None,
+    active_nutrient: str | None = None,
+) -> dict[str, Any]:
+    product = product_context if isinstance(product_context, dict) else {}
+    portion = None
+    if isinstance(consumption_context, dict) and consumption_context.get("amount") is not None:
+        portion = dict(consumption_context)
+    result = build_nutrition_insights(product, portion, user_profile, active_nutrient)
+    result["engine_status"] = result.get("status")
+    result["status"] = "pass"
+    result["summary"] = "已依標示基準量計算可推導的營養重點；沒有資料支持的健康門檻不會自行建立。"
+    result["knowledge_domain"] = "nutrition_reference"
+    return _response(
+        result,
+        [
+            {
+                "document": "data/dri_references.json",
+                "page": "structured",
+                "text": "Official structured Taiwan DRIs records",
+                "quote": "Official structured Taiwan DRIs records",
+                "score": 1.0,
+                "knowledge_domain": "nutrition_reference",
+                "source_url": "https://www.hpa.gov.tw/Pages/Detail.aspx?nodeid=4248&pid=12285",
+            }
+        ],
+        {"engine": "Nutrition Insight Engine", "deterministic": True},
+    )
 
 
 @mcp.tool()

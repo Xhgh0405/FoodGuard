@@ -25,6 +25,13 @@ from openai import AsyncOpenAI
 from foodguard.synthesis import NOT_ENOUGH_EVIDENCE, synthesize_evidence
 from foodguard.context import parse_consumption_amount, parse_exposure_context
 from foodguard.health_risk import has_health_risk_signal
+from foodguard.nutrition_insights import (
+    build_nutrition_insights,
+    lookup_dri,
+    parse_active_nutrient,
+    parse_portion,
+    parse_user_profile,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -120,6 +127,27 @@ _LOCAL_TOOL_SCHEMAS: dict[str, tuple[str, dict[str, Any]]] = {
                 "consumption_unit": {"type": "string"},
             },
             "required": ["nutrition_data", "consumption_amount", "consumption_unit"],
+        },
+    ),
+    "lookup_dri_reference": (
+        "Look up an official structured Taiwan DRIs reference.",
+        {
+            "type": "object",
+            "properties": {"nutrient": {"type": "string"}, "user_profile": {"type": "object"}},
+            "required": ["nutrient"],
+        },
+    ),
+    "analyze_nutrition_insights": (
+        "Calculate scaled intake, DRI comparisons and proactive nutrition insights.",
+        {
+            "type": "object",
+            "properties": {
+                "product_context": {"type": "object"},
+                "consumption_context": {"type": "object"},
+                "user_profile": {"type": "object"},
+                "active_nutrient": {"type": "string"},
+            },
+            "required": ["product_context"],
         },
     ),
     "check_allergens": (
@@ -296,6 +324,16 @@ def _fallback_intent(message: str) -> str:
     compact = re.sub(r"\s+", "", message)
     if parse_consumption_amount(message):
         return "consumption"
+    if re.search(r"(?:半|一|兩|二|三|1|2|3)\s*(?:瓶|包|盒|罐|份)", message):
+        return "consumption"
+    if any(
+        term in compact.casefold()
+        for term in (
+            "蛋白質", "鈉", "膳食纖維", "鈣", "鐵", "鉀", "維生素d", "鎂", "鋅",
+            "protein", "sodium", "fiber", "calcium", "iron", "potassium", "vitamin d", "magnesium", "zinc",
+        )
+    ) and any(term in compact for term in ("一天", "每日", "多少", "參考", "建議", "上限", "需要", "呢")):
+        return "nutrition_reference"
     if any(
         term in compact
         for term in (
@@ -426,6 +464,8 @@ def _structured_fallback_answer(
     product: dict[str, Any] | None = None,
 ) -> str:
     result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    if intent == "nutrition_reference":
+        return _nutrition_reference_answer(result)
     if intent == "consumption":
         if result.get("status") != "calculated":
             return str(result.get("message") or NOT_ENOUGH_EVIDENCE)
@@ -440,6 +480,20 @@ def _structured_fallback_answer(
             for field, value in result.get("scaled_values", {}).items()
             if field in labels
         )
+        insight_payload = payload.get("nutrition_insights", {})
+        insight = insight_payload.get("result", {}) if isinstance(insight_payload, dict) else {}
+        if isinstance(insight, dict):
+            for comparison in insight.get("reference_comparisons", []):
+                lines.append(
+                    f"- {comparison.get('nutrient')}：{comparison.get('actual')} {comparison.get('unit')}，"
+                    f"約占{comparison.get('comparison_label')} {comparison.get('percentage')}%"
+                )
+            if insight.get("missing_information"):
+                labels_missing = {"age": "年齡", "sex": "性別", "large_portion_context": "份量情境"}
+                missing = "、".join(labels_missing.get(item, item) for item in insight["missing_information"])
+                lines.append(f"- 若要換算成人參考比例，還需要：{missing}。")
+            if any(item.get("type") == "portion_context" for item in insight.get("proactive_insights", []) if isinstance(item, dict)):
+                lines.append("- 這個份量相對較大，請以實際一次或一天的攝取情境理解；系統不據此做健康結論。")
         disease_result = payload.get("disease_result", {})
         if isinstance(disease_result, dict) and disease_result.get("sources"):
             disease_name = disease_result.get("result", {}).get("disease") or "疾病"
@@ -540,6 +594,36 @@ def _structured_fallback_answer(
     return NOT_ENOUGH_EVIDENCE
 
 
+def _nutrition_reference_answer(result: dict[str, Any]) -> str:
+    nutrient = result.get("nutrient") or "這項營養素"
+    nutrient_label = {
+        "protein": "蛋白質", "sodium": "鈉", "fiber": "膳食纖維", "calcium": "鈣",
+        "iron": "鐵", "potassium": "鉀", "vitamin_d": "維生素D", "magnesium": "鎂", "zinc": "鋅",
+    }.get(nutrient, nutrient)
+    selected = result.get("selected")
+    if isinstance(selected, dict):
+        return (
+            f"{nutrient_label}：{selected.get('reference_value')} {selected.get('unit')}（{selected.get('reference_type')}）。\n"
+            f"適用對象：{selected.get('population')}，年齡 {selected.get('age_range')}，"
+            f"性別 {selected.get('sex')}，生理階段 {selected.get('life_stage')}。\n"
+            f"來源：{selected.get('source')}（衛生福利部國民健康署 DRIs 第八版）。"
+        )
+    records = result.get("records", [])
+    if not records:
+        return f"目前 structured DRIs 沒有找到「{nutrient_label}」的資料，不能用模型記憶補數字。"
+    lines = [f"{nutrient_label} 會依年齡或性別不同，先列出官方資料，不能直接替你選一個人群："]
+    for record in records[:6]:
+        lines.append(
+            f"- {record.get('sex')}、{record.get('age_range')}：{record.get('reference_value')} {record.get('unit')}（{record.get('reference_type')}）"
+        )
+    missing = {"age": "年齡", "sex": "性別", "weight_kg": "體重"}
+    required = "、".join(missing.get(item, item) for item in result.get("missing_information", []))
+    if required:
+        lines.append(f"若要選出個人適用值，請提供：{required}。")
+    lines.append("來源：衛生福利部國民健康署 DRIs 第八版 structured data。")
+    return "\n".join(lines)
+
+
 def _synthesize_payloads(
     payloads: list[dict[str, Any]],
     product_context: dict[str, Any] | None = None,
@@ -611,6 +695,7 @@ async def _llm_followup_answer(
         "current_product": product,
         "relevant_tool_results": {
             "calculation": payload.get("result", {}),
+            "nutrition_insights": payload.get("nutrition_insights", {}),
             "disease_guideline": (
                 disease_payload.get("result", {})
                 if isinstance(disease_payload, dict)
@@ -662,6 +747,11 @@ def _deterministic_analysis_summary(
     lines.append(f"- {allergen.get('summary', NOT_ENOUGH_EVIDENCE)}")
     lines.append(f"- {nutrition.get('summary', NOT_ENOUGH_EVIDENCE)}")
     lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
+    insights = task_results.get("nutrition_insights", {}).get("result", {})
+    important = insights.get("important_nutrients", []) if isinstance(insights, dict) else []
+    if important:
+        labels = {"calories_kcal": "熱量", "saturated_fat_g": "飽和脂肪", "sugar_g": "糖", "sodium_mg": "鈉", "protein_g": "蛋白質"}
+        lines.append("- 主動營養提醒：" + "、".join(labels.get(item, item) for item in important[:5]) + "；這些是值得納入整體攝取考量的標示項目，沒有自行套用高低門檻。")
     health_risk = task_results.get("health_risk", {}).get("result", {})
     if health_risk:
         lines.append(f"- 健康風險：{health_risk.get('summary', NOT_ENOUGH_EVIDENCE)}")
@@ -703,6 +793,16 @@ class FoodGuardMCPClient:
         self.current_product: dict[str, Any] | None = None
         self.current_analysis: dict[str, Any] | None = None
         self.consumption_context: dict[str, Any] | None = None
+        self.user_profile: dict[str, Any] = {
+            "age": None,
+            "sex": None,
+            "weight_kg": None,
+            "calories_kcal": None,
+            "life_stage": None,
+        }
+        self.active_nutrient: str | None = None
+        self._last_nutrition_insights: dict[str, Any] | None = None
+        self._last_dri_result: dict[str, Any] | None = None
         self._last_llm_used = False
         self._last_parsed_followup: dict[str, Any] | None = None
         self._last_previous_context: str | None = None
@@ -742,6 +842,7 @@ class FoodGuardMCPClient:
             "llm_provider": self.provider,
             "llm_model": self.model if self.provider != "none" else None,
             "current_product": (self.current_product or {}).get("product_name"),
+            "consumption_amount": dict(self.consumption_context) if self.consumption_context else None,
             "conversation_turns": sum(1 for item in self.history if item.get("role") == "user"),
             "conversation_messages": len(self.history),
             "intent": intent,
@@ -751,6 +852,32 @@ class FoodGuardMCPClient:
             "evidence_count": len(sources),
             "evidence_status": "available" if sources else "insufficient",
             "answer_source": answer_source,
+            "nutrition_basis": (self.current_product or {}).get("nutrition_basis")
+            or (
+                (self.current_product or {}).get("nutrition", {}).get("nutrition_basis")
+                if isinstance((self.current_product or {}).get("nutrition"), dict)
+                else None
+            ),
+            "user_profile": dict(self.user_profile),
+            "active_nutrient": self.active_nutrient,
+            "active_health_context": (self.current_product or {}).get("health_context_analysis"),
+            "dri_lookup": bool(self._last_dri_result or (self._last_nutrition_insights and self._last_nutrition_insights.get("reference_comparisons"))),
+            "dri_reference": (
+                [dict(self._last_dri_result.get("selected"))]
+                if self._last_dri_result and isinstance(self._last_dri_result.get("selected"), dict)
+                else [
+                    {
+                        "nutrient": item.get("nutrient"),
+                        "reference_type": item.get("reference_type"),
+                        "reference_value": item.get("reference_value"),
+                        "unit": item.get("unit"),
+                    }
+                    for item in (self._last_nutrition_insights or {}).get("reference_comparisons", [])
+                ]
+            ),
+            "rule_engine_calculations": (self._last_nutrition_insights or {}).get("calculated_intake", {}),
+            "proactive_insights": (self._last_nutrition_insights or {}).get("proactive_insights", []),
+            "memory_used": bool(self._last_previous_context or self.current_product),
         }
         if self._last_parsed_followup:
             result["parsed_follow_up"] = dict(self._last_parsed_followup)
@@ -809,6 +936,10 @@ class FoodGuardMCPClient:
                         self.current_product[key] = copy.deepcopy(self.current_analysis[key])
             context = self.current_product.get("consumption_context")
             self.consumption_context = copy.deepcopy(context) if isinstance(context, dict) else None
+            profile = self.current_product.get("user_profile")
+            if isinstance(profile, dict):
+                self.user_profile.update(copy.deepcopy(profile))
+            self.active_nutrient = self.current_product.get("active_nutrient") or self.active_nutrient
             exposure = self.current_product.get("exposure_context")
             if isinstance(exposure, dict):
                 self.exposure_context.update(copy.deepcopy(exposure))
@@ -818,6 +949,9 @@ class FoodGuardMCPClient:
             return
         context = {
             "product": self.current_product or {},
+            "user_profile": self.user_profile,
+            "active_nutrient": self.active_nutrient,
+            "consumption_context": self.consumption_context,
             "analysis": {
                 name: payload.get("result", {})
                 for name, payload in (self.current_analysis or {}).items()
@@ -910,9 +1044,11 @@ class FoodGuardMCPClient:
 
         from mcp_server import (
             calculate_consumption_nutrients,
+            analyze_nutrition_insights,
             check_allergens,
             check_nutrition_claim,
             check_nutrition_label,
+            lookup_dri_reference,
             search_disease_guideline,
             search_food_regulation,
             search_health_risk,
@@ -924,6 +1060,8 @@ class FoodGuardMCPClient:
             "check_nutrition_label": check_nutrition_label,
             "check_nutrition_claim": check_nutrition_claim,
             "calculate_consumption_nutrients": calculate_consumption_nutrients,
+            "analyze_nutrition_insights": analyze_nutrition_insights,
+            "lookup_dri_reference": lookup_dri_reference,
             "search_disease_guideline": search_disease_guideline,
             "search_health_risk": search_health_risk,
         }
@@ -977,6 +1115,8 @@ class FoodGuardMCPClient:
         self._last_llm_used = False
         self._last_parsed_followup = None
         self._last_health_risk_result = None
+        self._last_nutrition_insights = None
+        self._last_dri_result = None
         previous_users = [
             str(item.get("content", ""))
             for item in self.history
@@ -992,8 +1132,28 @@ class FoodGuardMCPClient:
             contextual_intent = _fallback_intent(contextual_query)
             if contextual_intent != "search":
                 intent = contextual_intent
+        if intent == "search" and self.consumption_context and any(
+            term in user_message for term in ("占", "比例", "這些", "這次")
+        ):
+            intent = "consumption"
+        if intent == "search" and self.consumption_context and (
+            re.search(r"\d+\s*歲", user_message)
+            or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+        ):
+            intent = "consumption"
+        if intent == "nutrition_reference" and self.current_product and self.consumption_context:
+            if not any(term in user_message for term in ("成人", "一天", "每日", "參考", "建議", "上限")):
+                intent = "consumption"
+        if intent == "intake" and self.consumption_context and (
+            any(term in user_message for term in ("占", "比例", "這些", "這次"))
+            or re.search(r"\d+\s*歲", user_message)
+            or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+        ):
+            intent = "consumption"
         if append_user:
             self.history.append({"role": "user", "content": user_message})
+        self.user_profile = parse_user_profile(user_message, self.user_profile)
+        self.active_nutrient = parse_active_nutrient(user_message, self.active_nutrient)
         sources: list[dict[str, Any]] = []
         called_tools: list[str] = []
         payload: dict[str, Any] = {"result": {}, "sources": []}
@@ -1036,7 +1196,15 @@ class FoodGuardMCPClient:
                     "nutrition_data": product.get("nutrition", {}),
                 }
             elif intent == "consumption":
-                parsed_amount = parse_consumption_amount(user_message)
+                portion = parse_portion(user_message, product.get("nutrition", {}))
+                parsed_amount = portion or parse_consumption_amount(user_message)
+                if (not parsed_amount or parsed_amount.get("amount") is None) and self.consumption_context:
+                    parsed_amount = {
+                        "amount": self.consumption_context.get("amount", self.consumption_context.get("consumption_amount")),
+                        "unit": self.consumption_context.get("unit", self.consumption_context.get("consumption_unit")),
+                        "raw": "previous_context",
+                        "source": "previous_context",
+                    }
                 if not parsed_amount:
                     answer = "請提供明確的消費量，例如 2000 ml 或 500 公克。"
                     self.history.append({"role": "assistant", "content": answer})
@@ -1052,7 +1220,8 @@ class FoodGuardMCPClient:
                 self._last_parsed_followup = {
                     "consumption_amount": parsed_amount["amount"],
                     "consumption_unit": parsed_amount["unit"],
-                    "raw": parsed_amount["raw"],
+                    "raw": parsed_amount.get("raw", "previous_context"),
+                    "source": parsed_amount.get("source", "explicit_amount"),
                 }
                 self.consumption_context = dict(self._last_parsed_followup)
                 if self.current_product is not None:
@@ -1065,6 +1234,15 @@ class FoodGuardMCPClient:
                     "consumption_amount": parsed_amount["amount"],
                     "consumption_unit": parsed_amount["unit"],
                 }
+            elif intent == "nutrition_reference":
+                nutrient = self.active_nutrient or parse_active_nutrient(contextual_query)
+                if not nutrient:
+                    answer = "請指出要查詢的營養素，例如蛋白質、鈉、鉀或鈣。"
+                    self.history.append({"role": "assistant", "content": answer})
+                    return ClientResponse(answer=answer, sources=[], tool_calls=[], evidence_synthesis=synthesize_evidence([]), diagnostics=self._diagnostics(intent=intent, tool_calls=[], sources=[], answer_source="fallback"))
+                self.active_nutrient = nutrient
+                tool_name = "lookup_dri_reference"
+                arguments = {"nutrient": nutrient, "user_profile": self.user_profile}
             elif intent == "health_guidance":
                 disease = next(
                     (term for term in ("糖尿病", "高血壓", "腎臟病", "高血脂") if term in contextual_query),
@@ -1095,7 +1273,17 @@ class FoodGuardMCPClient:
                 payload = await self.call_tool(tool_name, arguments)
                 called_tools.append(tool_name)
                 _collect_sources(payload, sources)
+                if intent == "nutrition_reference":
+                    self._last_dri_result = copy.deepcopy(payload.get("result", {}))
                 if intent == "consumption":
+                    insight = build_nutrition_insights(
+                        product,
+                        {"amount": parsed_amount["amount"], "unit": parsed_amount["unit"]},
+                        self.user_profile,
+                        self.active_nutrient,
+                    )
+                    payload["nutrition_insights"] = {"result": insight, "sources": []}
+                    self._last_nutrition_insights = insight
                     previous_context = contextual_query
                     disease = next(
                         (
@@ -1129,7 +1317,9 @@ class FoodGuardMCPClient:
             )
 
         answer_source = "rule_engine" if intent == "consumption" else ("mixed" if called_tools else "fallback")
-        if intent in {"health_guidance", "health_risk", "consumption"} and self._llm is not None:
+        # Consumption output stays rule-engine authoritative: a model may
+        # explain numbers, but it must not rewrite or omit deterministic facts.
+        if intent in {"health_guidance", "health_risk"} and self._llm is not None:
             generated = await _llm_followup_answer(
                 self._llm,
                 self.model,
@@ -1206,6 +1396,15 @@ class FoodGuardMCPClient:
                 {"claim": "、".join(claims), "nutrition_data": nutrition},
             ),
         }
+        task_results["nutrition_insights"] = await self._safe_analysis_tool(
+            "analyze_nutrition_insights",
+            {
+                "product_context": product_data,
+                "consumption_context": {},
+                "user_profile": self.user_profile,
+                "active_nutrient": self.active_nutrient,
+            },
+        )
         if has_health_risk_signal(product_data):
             task_results["health_risk"] = await self._safe_analysis_tool(
                 "search_health_risk",
@@ -1215,8 +1414,15 @@ class FoodGuardMCPClient:
                     "exposure_context": {},
                 },
             )
+        product_data = copy.deepcopy(product_data)
+        product_data["nutrition_insights"] = copy.deepcopy(
+            task_results["nutrition_insights"].get("result", {})
+        )
         self.current_product = copy.deepcopy(product_data)
         self.current_analysis = copy.deepcopy(task_results)
+        self._last_nutrition_insights = copy.deepcopy(
+            task_results["nutrition_insights"].get("result", {})
+        )
         overall_summary = await self.summarize_analysis(product_data, task_results)
         evidence_synthesis = _synthesize_payloads(list(task_results.values()), product_data)
         all_sources = [
@@ -1233,15 +1439,17 @@ class FoodGuardMCPClient:
                 "check_allergens",
                 "check_nutrition_label",
                 "check_nutrition_claim",
+                "analyze_nutrition_insights",
                 *(["search_health_risk"] if "health_risk" in task_results else []),
             ],
             "diagnostics": self._diagnostics(
                 intent="product_analysis",
                 tool_calls=[
-                    "check_allergens",
-                    "check_nutrition_label",
-                    "check_nutrition_claim",
-                    *(["search_health_risk"] if "health_risk" in task_results else []),
+                "check_allergens",
+                "check_nutrition_label",
+                "check_nutrition_claim",
+                "analyze_nutrition_insights",
+                *(["search_health_risk"] if "health_risk" in task_results else []),
                 ],
                 sources=all_sources,
                 answer_source="llm" if self._llm else "mixed",
@@ -1269,7 +1477,18 @@ class FoodGuardMCPClient:
         routed_intent = _fallback_intent(user_message)
         if routed_intent == "search":
             routed_intent = _fallback_intent(_fallback_query(self.history, user_message))
-        if routed_intent in {"health_guidance", "health_risk", "consumption"}:
+        if routed_intent == "search" and self.consumption_context and any(
+            term in user_message for term in ("占", "比例", "這些", "這次")
+        ):
+            routed_intent = "consumption"
+        if routed_intent == "search" and self.consumption_context and (
+            re.search(r"\d+\s*歲", user_message) or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
+        ):
+            routed_intent = "consumption"
+        if routed_intent == "nutrition_reference" and self.current_product and self.consumption_context:
+            if not any(term in user_message for term in ("成人", "一天", "每日", "參考", "建議", "上限")):
+                routed_intent = "consumption"
+        if routed_intent in {"health_guidance", "health_risk", "consumption", "nutrition_reference", "intake"}:
             return await self._ask_without_llm(user_message)
         if self._llm is None:
             return await self._ask_without_llm(user_message)

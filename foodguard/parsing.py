@@ -106,7 +106,7 @@ def parse_nutrition(value: Any) -> dict[str, Any]:
             values[field] = parsed
 
     serving_match = re.search(
-        r"每\s*(?:一份量|份量|一份|份)?\s*([0-9]+(?:\.[0-9]+)?\s*(?:公克|克|g|毫升|ml|mL))",
+        r"每\s*(?:一份量|份量|一份|份)?\s*([0-9]+(?:\.[0-9]+)?\s*(?:公克|克|g|毫升|ml|mL|公升|升|l|L))",
         raw_text,
         flags=re.IGNORECASE,
     )
@@ -116,9 +116,11 @@ def parse_nutrition(value: Any) -> dict[str, Any]:
 
     if serving_match:
         amount_match = re.search(r"[0-9]+(?:\.[0-9]+)?", serving_match.group(1))
-        unit_match = re.search(r"(公克|克|g|毫升|ml|mL)", serving_match.group(1), re.IGNORECASE)
+        unit_match = re.search(r"(公克|克|g|毫升|ml|mL|公升|升|l|L)", serving_match.group(1), re.IGNORECASE)
         basis_amount = float(amount_match.group()) if amount_match else None
-        basis_unit = "ml" if unit_match and unit_match.group(1).lower() in {"ml", "毫升"} else "g"
+        basis_unit = "ml" if unit_match and unit_match.group(1).lower() in {"ml", "毫升", "l", "公升", "升"} else "g"
+        if basis_unit == "ml" and unit_match and unit_match.group(1).lower() in {"l", "公升", "升"}:
+            basis_amount *= 1000
     else:
         basis_amount = None
         basis_unit = None

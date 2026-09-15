@@ -450,6 +450,29 @@ def _health_risk_details(result: dict[str, Any]) -> list[str]:
     return details or ["目前沒有足夠產品或成分資料對應到特定健康風險主題。"]
 
 
+def _nutrition_insight_details(result: dict[str, Any]) -> list[str]:
+    labels = {
+        "calories_kcal": "熱量", "protein_g": "蛋白質", "fat_g": "脂肪",
+        "saturated_fat_g": "飽和脂肪", "carbohydrate_g": "碳水化合物",
+        "sugar_g": "糖", "sodium_mg": "鈉", "fiber_g": "膳食纖維",
+    }
+    details: list[str] = []
+    important = [labels.get(item, item) for item in result.get("important_nutrients", [])[:6]]
+    if important:
+        details.append("較值得注意的標示項目：" + "、".join(important))
+    if result.get("calculated_intake"):
+        details.append("已依目前份量換算實際攝取：" + "、".join(
+            f"{labels.get(key, key)} {value:g}" for key, value in result["calculated_intake"].items()
+            if isinstance(value, (int, float))
+        ))
+    for comparison in result.get("reference_comparisons", []):
+        details.append(
+            f"{comparison.get('nutrient')} 約占{comparison.get('comparison_label')} {comparison.get('percentage')}%（{comparison.get('reference_type')}）"
+        )
+    details.append("以上只標示資料支持的重點，不自行建立高、低或過量門檻。")
+    return details
+
+
 def _initialise_state() -> None:
     if "session_id" not in st.session_state:
         session_id = None
@@ -580,6 +603,13 @@ def _render_product_view() -> None:
         _render_result_card(
             payload, detail_builder(payload.get("result", {})), key, _label
         )
+    if analysis.get("nutrition_insights"):
+        _render_result_card(
+            analysis["nutrition_insights"],
+            _nutrition_insight_details(analysis["nutrition_insights"].get("result", {})),
+            "nutrition-insights",
+            "主動營養判讀",
+        )
     if analysis.get("health_risk"):
         _render_result_card(
             analysis["health_risk"],
@@ -591,6 +621,7 @@ def _render_product_view() -> None:
     _render_debug(
         {
             **{key: analysis[key] for key, _label, _builder in task_labels},
+            **({"nutrition_insights": analysis["nutrition_insights"]} if analysis.get("nutrition_insights") else {}),
             **({"health_risk": analysis["health_risk"]} if analysis.get("health_risk") else {}),
         },
         analysis.get("tool_calls", []),
@@ -636,6 +667,18 @@ def _render_chat_section() -> None:
                     st.session_state.chat_history = history
                     if response.diagnostics:
                         st.session_state.last_chat_diagnostics = response.diagnostics
+                        profile = response.diagnostics.get("user_profile")
+                        active_nutrient = response.diagnostics.get("active_nutrient")
+                        if isinstance(profile, dict) and st.session_state.analysis:
+                            st.session_state.analysis["user_profile"] = copy.deepcopy(profile)
+                            product_data = st.session_state.analysis.get("product_data")
+                            if isinstance(product_data, dict):
+                                product_data["user_profile"] = copy.deepcopy(profile)
+                        if active_nutrient and st.session_state.analysis:
+                            st.session_state.analysis["active_nutrient"] = active_nutrient
+                            product_data = st.session_state.analysis.get("product_data")
+                            if isinstance(product_data, dict):
+                                product_data["active_nutrient"] = active_nutrient
                         consumption = response.diagnostics.get("consumption_context")
                         if consumption and st.session_state.analysis:
                             st.session_state.consumption_context = copy.deepcopy(consumption)
