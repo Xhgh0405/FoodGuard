@@ -136,12 +136,12 @@ Copy-Item .env.example .env
 啟動簡化版 Web Demo：
 
 ```powershell
-streamlit run app.py
+streamlit run app.py --server.port 8502
 ```
 
 產品名稱為「食標通 LabelCheck」，正式專題名稱為「基於 MCP 與 RAG 的食品標示智慧判讀系統」。首頁提供品名、成分、營養標示及營養宣稱輸入。按下「開始判讀」後，UI 會使用 `FoodGuardMCPClient` 透過 stdio MCP 呼叫三個分析 tools，並顯示過敏原辨識、營養標示完整性、營養宣稱查核與法規依據。下方的食品與規範問答會保留 conversation history，並以 SQLite 保存產品、分析結果與對話。
 
-每個網址中的 `session_id` 都會保存至 `data/foodguard_memory.db`，因此重新啟動 Streamlit 後，原網址仍可恢復同一份產品與問答資料；固定埠設定在 `.streamlit/config.toml`，預設使用 `8502`。每次分析或問答也會自動更新 `data/reports/foodguard-<session_id>.html`，結果頁的「下載離線報告」可另存一份；HTML 不依賴 Streamlit，FoodGuard 或電腦關機後仍可直接用瀏覽器開啟。`localhost` 網址本身在電腦關機時無法提供服務；若要讓同一個線上網址在關機期間也能連線，必須將應用程式部署到持續運作的主機。
+每個網址中的 `session_id` 都會保存至 `data/foodguard_memory.db`，因此重新啟動 Streamlit 後，原網址仍可恢復同一份產品與問答資料。本機使用 `streamlit run app.py --server.port 8502`；`.streamlit/config.toml` 不鎖定埠號，讓 Streamlit Community Cloud 使用平台要求的預設埠。每次分析或問答也會自動更新 `data/reports/foodguard-<session_id>.html`，結果頁的「下載離線報告」可另存一份；HTML 不依賴 Streamlit，FoodGuard 或電腦關機後仍可直接用瀏覽器開啟。`localhost` 網址本身在電腦關機時無法提供服務；若要讓同一個線上網址在關機期間也能連線，必須將應用程式部署到持續運作的主機。
 
 營養宣稱門檻存放於 `data/nutrition_claim_rules.json`，由 deterministic rule engine 讀取；「2000 ml」這類追問會解析為明確消費量並呼叫 `calculate_consumption_nutrients` 換算。疾病飲食問題會使用 `search_disease_guideline`，不會把疾病指引誤當成個人醫療上限。使用者介面只呈現判讀結果、依據與建議，不呈現內部開發者資訊或除錯資料。
 
