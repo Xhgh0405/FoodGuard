@@ -637,10 +637,10 @@ def _render_chat_section() -> None:
     st.header("食品與規範問答")
     product_label = st.session_state.analysis_product_name or "目前食品"
     st.caption(f"目前食品：{product_label}")
-    st.caption("可以針對目前食品、分析結果或食品標示規範繼續提問。")
+    st.caption("可以詢問目前食品、分析結果、食品規範、一般知識或需要查證的最新資訊。")
     with st.expander("目前可查的法規主題", expanded=False):
         st.markdown(
-            "食品安全衛生管理、過敏原標示、包裝食品營養標示、包裝食品營養宣稱。"
+            "食品安全衛生管理、過敏原標示、包裝食品營養標示、營養宣稱、疾病飲食、一般問答與 Web Search。"
         )
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
