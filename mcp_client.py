@@ -1883,6 +1883,34 @@ class FoodGuardMCPClient:
         if self._llm is None:
             return await self._ask_without_llm(user_message)
 
+        # General knowledge must not be polluted by the food-regulation
+        # fallback merely because the question happens to mention a food.
+        # Give the model a clean direct-answer turn with no MCP tools.
+        if routed_intent == "general_knowledge":
+            self.history.append({"role": "user", "content": user_message})
+            answer = await _llm_general_answer(
+                self._llm,
+                self.model,
+                user_message,
+                self.current_product or {},
+                self.history,
+            )
+            answer = answer or _general_fallback_answer(user_message)
+            self._last_llm_used = bool(answer)
+            self.history.append({"role": "assistant", "content": answer})
+            return ClientResponse(
+                answer=answer,
+                sources=[],
+                tool_calls=[],
+                evidence_synthesis=synthesize_evidence([]),
+                diagnostics=self._diagnostics(
+                    intent="general_knowledge",
+                    tool_calls=[],
+                    sources=[],
+                    answer_source="direct_llm" if self._last_llm_used else "fallback",
+                ),
+            )
+
         self.history.append({"role": "user", "content": user_message})
         openai_tools = [_tool_to_openai_schema(tool) for tool in self._tools]
         sources: list[dict[str, Any]] = []
@@ -1920,6 +1948,7 @@ class FoodGuardMCPClient:
                     not sources
                     and not fallback_attempted
                     and _looks_like_food_question(user_message)
+                    and _fallback_intent(user_message) != "general_knowledge"
                     and "search_food_regulation" in self.tool_names
                 ):
                     fallback_attempted = True

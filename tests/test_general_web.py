@@ -33,6 +33,30 @@ async def test_general_question_has_offline_answer_without_food_refusal() -> Non
 
 
 @pytest.mark.anyio
+async def test_general_food_question_bypasses_food_regulation_tools() -> None:
+    class Completions:
+        async def create(self, **kwargs: Any):
+            assert "tools" not in kwargs
+            message = type("Message", (), {"content": "熱狗通常呈紅褐色；外觀會依種類與烹調方式不同。"})()
+            return type("Completion", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+    fake_llm = type(
+        "FakeLLM",
+        (),
+        {"chat": type("Chat", (), {"completions": Completions()})()},
+    )()
+    client = FoodGuardMCPClient(llm_client=fake_llm, require_api_key=False)
+    client._mcp = object()
+
+    response = await client.ask("熱狗是什麼顏色的？")
+
+    assert response.tool_calls == []
+    assert "紅褐色" in response.answer
+    assert response.diagnostics["intent"] == "general_knowledge"
+    assert response.diagnostics["answer_mode"] == "direct_llm"
+
+
+@pytest.mark.anyio
 async def test_current_information_calls_web_search_and_keeps_result_schema(monkeypatch) -> None:
     client = FoodGuardMCPClient(llm_client=None, require_api_key=False)
     client._llm = None
@@ -123,4 +147,3 @@ def test_web_search_disabled_is_structured_fallback(monkeypatch) -> None:
     assert result["result"]["status"] == "disabled"
     assert result["result"]["results"] == []
     assert result["sources"] == []
-
