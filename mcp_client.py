@@ -47,8 +47,18 @@ SYSTEM_PROMPT = f"""你是 FoodGuard 食品標示法規助理。
 6. 對「食品法有哪些」「食品標示有哪些規定」這類廣泛問題，一律先呼叫 search_food_regulation；只能整理搜尋結果明確涵蓋的主題。
 7. 如果搜尋結果只涵蓋特定主題，請說明目前只能確認那些主題，不要憑記憶列出未出現在來源中的規定。
 8. 使用者若詢問與食品無關的問題，請簡短說明本服務只處理食品標示與營養宣稱。
-9. 回答只輸出自然語言：先講結論，再用 3 至 5 點條列重點；不要逐段重複檢索文字。
+9. 回答只輸出自然語言：簡單問題直接、簡潔回答；產品宣稱、過敏原與營養標示先講結論，再補充 2 至 4 個重點；不要逐段重複檢索文字。
 10. Client 會另外呈現來源，回答中不要自行建立「法規來源」段落，也不要貼出原文。
+
+基本原則：
+1. 簡單的食品常識、標示理解、營養宣稱概念或一般產品判讀，直接回答並保持簡潔。
+2. 涉及法規認定、宣稱是否合規或數值是否符合門檻時，必須先依據官方資料或系統檢索結果再回答。
+3. 食品法規回答只能以官方資料、檢索證據與產品資訊為基礎，不得捏造法規名稱、條文內容或數字。
+4. 證據不足時，明確說明「{NOT_ENOUGH_EVIDENCE}」。
+5. 與食品無關的問題，簡短說明本系統主要處理食品標示與營養法規相關內容。
+6. 使用繁體中文，語氣專業但容易理解；法規判讀保留保守語氣與依據限制。
+
+回答風格：簡單問題直接回答；法規／宣稱問題先結論，再說明依據與限制；資料不足時指出不足，並說明需要補充的產品資訊。
 """
 
 ANALYSIS_SYSTEM_PROMPT = f"""你是 FoodGuard 食品標示分析助手。
@@ -58,7 +68,7 @@ SYNTHESIZED_EVIDENCE 是已去重、分級、濃縮的證據，不是可以照�
 你必須先理解食品資料，再用最相關的整理後重點支持結論。
 不得捏造不存在的法規、標準、門檻、條號或數字。
 如果證據不足以支持明確判斷，必須明確說：{NOT_ENOUGH_EVIDENCE}。
-回答使用台灣繁體中文，先講整體結論，再用 3 至 5 點條列重點；不要複製原始檢索段落。
+回答使用台灣繁體中文；產品宣稱、過敏原與營養標示先講結論，再用 2 至 4 點條列重點；簡單判讀直接回答，不要複製原始檢索段落。
 保留「可能、建議、需要確認、應」的語氣差異，不要把建議改成強制要求。
 營養標示回答聚焦已提供欄位、缺少欄位與需確認項目；宣稱回答聚焦宣稱與輸入數值是否有證據支持；疾病指引只能說明飲食注意事項，不做診斷。
 不要在回答中顯示 raw chunk、PDF、chunk_id、embedding 或相似度分數；Client 會另外顯示來源。
@@ -89,6 +99,14 @@ class LocalToolDescriptor:
 
 
 _LOCAL_TOOL_SCHEMAS: dict[str, tuple[str, dict[str, Any]]] = {
+    "search_food_composition": (
+        "Look up official TFDA food-composition data by food name.",
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+        },
+    ),
     "search_food_regulation": (
         "Search imported official food-regulation sources.",
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
@@ -384,7 +402,42 @@ def _is_contextual_followup(message: str) -> bool:
     )
 
 
-def _fallback_intent(message: str) -> str:
+def _mentions_current_product(
+    message: str, product: dict[str, Any] | None = None
+) -> bool:
+    """Recognize an explicit product reference before generic nutrient words."""
+
+    if not isinstance(product, dict):
+        return False
+    compact = re.sub(r"\s+", "", str(message or ""))
+    product_name = re.sub(r"\s+", "", str(product.get("product_name") or ""))
+    if product_name and len(product_name) >= 2 and product_name in compact:
+        return True
+    return any(
+        term in compact
+        for term in (
+            "這瓶", "這包", "這盒", "這罐", "這款", "這個產品", "這項產品",
+            "這個食品", "目前產品", "目前食品", "該產品", "本產品", "本品",
+        )
+    )
+
+
+def _asks_for_product_fact(message: str) -> bool:
+    """Recognize short field/value follow-ups that omit the product name."""
+
+    compact = re.sub(r"\s+", "", str(message or ""))
+    return any(
+        term in compact
+        for term in (
+            "多少", "幾克", "幾公克", "幾毫克", "幾大卡", "含量", "數值",
+            "標示", "有哪些", "有什麼", "有沒有", "列出", "呢",
+        )
+    )
+
+
+def _fallback_intent(
+    message: str, product: dict[str, Any] | None = None
+) -> str:
     """Route common questions safely when no generative model is available.
 
     These labels are deliberately broader than the old food-only router.  The
@@ -397,6 +450,11 @@ def _fallback_intent(message: str) -> str:
     # general-knowledge question into a product-risk answer.
     if any(term in compact for term in ("什麼顏色", "甚麼顏色", "何種顏色", "顏色是")):
         return "general_knowledge"
+    if any(
+        term in compact
+        for term in ("食品成分資料庫", "食品營養成分資料庫", "查詢食物成分", "資料庫中的食物")
+    ):
+        return "food_database"
     if parse_consumption_amount(message):
         return "current_product_question"
     if (
@@ -408,8 +466,80 @@ def _fallback_intent(message: str) -> str:
         return "current_product_question"
     if any(term in compact for term in ("今天", "現在", "最近", "最新", "今年", "現任", "更新", "公告")):
         return "current_information"
+    allergen_terms = (
+        "過敏", "過敏原", "奶類", "乳類", "牛奶", "羊奶", "雞蛋", "蛋類",
+        "花生", "甲殼類", "魚類", "芝麻", "堅果", "麩質", "大豆", "芒果",
+        "螺貝類", "亞硫酸鹽",
+    )
+    allergen_label_terms = (
+        "食品標示", "標示中", "如何標示", "怎麼標示", "需要標示", "應標示",
+        "標示規定", "法規", "規定", "設備", "管線", "廠房", "製程",
+        "處理", "交叉污染", "污染", "加註", "警語", "是否一定",
+        "是否需要", "需不需要",
+    )
+    if any(term in compact for term in allergen_terms) and any(
+        term in compact for term in allergen_label_terms
+    ):
+        # Distinguish a regulation question from a product ingredient lookup:
+        # 「這個食品有哪些過敏原」 remains `allergen`, while questions about
+        # the labeling obligation must retrieve the official regulation.
+        return "food_regulation"
     if any(term in compact for term in ("食品法規", "食品標示規定", "營養標示規定", "無糖標準", "法規", "規定")):
         return "food_regulation"
+    claim_terms = ("高蛋白", "低蛋白", "低脂", "低脂肪", "無糖", "零糖", "低鈉", "高纖", "高纖維")
+    claim_question_terms = (
+        "宣稱", "聲稱", "標榜", "是否合法", "合不合法", "符合規定",
+        "是否符合", "可以標示", "能否標示", "查核",
+    )
+    if any(term in compact for term in claim_terms) and any(
+        term in compact for term in claim_question_terms
+    ):
+        # A legality/compliance question about a nutrition phrase must reach
+        # the claim rule, even when the phrase contains a nutrient word such
+        # as「無糖」that could otherwise look like a value lookup.
+        return "claim"
+    # Compliance questions must not fall through to the product-fact answer.
+    # This is intentionally topic-based rather than tied to a particular
+    # product or wording, so「營養標示符合食品法嗎」and equivalent questions
+    # retrieve regulation evidence.  Specific nutrition claims stay on the
+    # structured claim-rule path above.
+    if (
+        not any(term in compact for term in claim_terms)
+        and any(term in compact for term in ("標示", "營養", "過敏原", "食品安全"))
+        and any(
+            term in compact
+            for term in (
+                "食品法", "符合", "合規", "合法", "違規", "違法", "法規",
+                "規定", "應否", "可否", "能否", "是否需要",
+            )
+        )
+    ):
+        return "food_regulation"
+    product_reference = _mentions_current_product(message, product)
+    product_nutrient_words = (
+        "蛋白質", "蛋白", "鈉", "膳食纖維", "纖維", "糖", "碳水化合物",
+        "碳水", "熱量", "卡路里", "脂肪", "營養", "成分", "原料", "配料",
+    )
+    reference_words = ("一天", "每日", "參考", "建議", "上限", "需要")
+    safety_or_disease_words = (
+        "糖尿病", "高血壓", "腎臟病", "腎病", "高血脂", "致癌", "癌症",
+        "健康風險", "風險", "適合", "過敏", "過敏原",
+    )
+    if product_reference and any(term in compact for term in product_nutrient_words):
+        # Product facts win for questions such as「果乾的蛋白質多少」.
+        # Keep explicit daily-reference questions on the DRI route.
+        if not any(term in compact for term in (*reference_words, *safety_or_disease_words)):
+            return "current_product_question"
+    if (
+        isinstance(product, dict)
+        and _asks_for_product_fact(message)
+        and any(term in compact for term in product_nutrient_words)
+        and not any(term in compact for term in (*reference_words, *safety_or_disease_words))
+    ):
+        # Once a product is loaded, concise follow-ups such as「蛋白質多少」
+        # refer to that product unless the user explicitly asks for a daily
+        # reference or a health/suitability judgment.
+        return "current_product_question"
     if any(
         term in compact.casefold()
         for term in (
@@ -429,7 +559,7 @@ def _fallback_intent(message: str) -> str:
         return "health_risk"
     if any(term in compact for term in ("一天", "每日", "一天最多", "幾個", "幾份", "可以吃多少")):
         return "intake"
-    if any(term in compact for term in ("過敏", "過敏原", "奶類", "乳類", "雞蛋", "蛋類")):
+    if any(term in compact for term in allergen_terms):
         return "allergen"
     if any(term in compact for term in ("宣稱", "高蛋白", "低鈉", "無糖", "零糖", "高纖", "低脂")):
         return "claim"
@@ -447,6 +577,8 @@ def _fallback_intent(message: str) -> str:
 def _needs_web_search(message: str, intent: str) -> bool:
     """Decide whether volatile or explicitly requested information needs Web."""
 
+    if intent == "food_database":
+        return False
     compact = re.sub(r"\s+", "", str(message or ""))
     volatile = ("今天", "現在", "最近", "最新", "今年", "現任", "更新", "公告", "新研究", "目前")
     explicit = ("幫我查", "請查", "搜尋", "查一下", "查詢", "上網", "網路")
@@ -467,13 +599,24 @@ def _web_domains_for_question(message: str, intent: str) -> list[str]:
 
 
 def _claim_from_question(message: str, current_claims: list[str]) -> str:
-    match = re.search(
-        r"(高|低|無|零|不含|富含|多)\s*(蛋白質|蛋白|膳食纖維|纖維|糖|鈉|脂肪|鈣|鐵)",
+    matches = re.findall(
+        r"(高|低|無|零|不含|富含|多)\s*(蛋白質|蛋白|膳食纖維|纖維|纖|糖|鈉|脂肪|脂|鈣|鐵)",
         message,
     )
-    if match:
-        nutrient = {"蛋白": "蛋白質", "纖維": "膳食纖維"}.get(match.group(2), match.group(2))
-        return f"{match.group(1)}{nutrient}"
+    if matches:
+        nutrient_aliases = {
+            "蛋白": "蛋白質",
+            "纖維": "膳食纖維",
+            "纖": "膳食纖維",
+            "脂": "脂肪",
+        }
+        claims: list[str] = []
+        for prefix, raw_nutrient in matches:
+            nutrient = nutrient_aliases.get(raw_nutrient, raw_nutrient)
+            claim = f"{prefix}{nutrient}"
+            if claim not in claims:
+                claims.append(claim)
+        return "、".join(claims)
     return "、".join(current_claims)
 
 
@@ -599,9 +742,15 @@ def _structured_fallback_answer(
                     f"約占{comparison.get('comparison_label')} {comparison.get('percentage')}%"
                 )
             if insight.get("missing_information"):
-                labels_missing = {"age": "年齡", "sex": "性別", "large_portion_context": "份量情境"}
+                labels_missing = {"age": "年齡", "sex": "性別", "large_portion_context": "份量情境", "age_group_reference": "適用年齡層的 DRIs 參考值"}
                 missing = "、".join(labels_missing.get(item, item) for item in insight["missing_information"])
-                lines.append(f"- 若要換算成人參考比例，還需要：{missing}。")
+                if "age_group_reference" in insight["missing_information"]:
+                    profile = insight.get("user_profile") or {}
+                    age = profile.get("age")
+                    age_text = f"{age} 歲" if age is not None else "目前年齡層"
+                    lines.append(f"- 目前沒有適用於{age_text}的 DRIs 參考值，因此未計算百分比。")
+                else:
+                    lines.append(f"- 若要換算 DRIs 參考比例，還需要：{missing}。")
             if any(item.get("type") == "portion_context" for item in insight.get("proactive_insights", []) if isinstance(item, dict)):
                 lines.append("- 這個份量相對較大，請以實際一次或一天的攝取情境理解；系統不據此做健康結論。")
         disease_result = payload.get("disease_result", {})
@@ -615,8 +764,12 @@ def _structured_fallback_answer(
             lines.append("這是依標示基準量的比例換算，不代表個人的每日安全上限。")
         lines.append("是否適合仍須配合整餐碳水化合物、用藥、血糖與醫囑判斷。")
         return "\n".join(lines)
+    if intent == "food_database":
+        return _food_database_fallback_answer(payload)
     if intent == "allergen":
         return _allergen_answer(question, result)
+    if intent == "food_regulation":
+        return _regulation_fallback_answer(question, payload)
     if intent == "product_suitability":
         return _suitability_answer(question, product or {})
     if intent == "health_risk":
@@ -626,8 +779,25 @@ def _structured_fallback_answer(
         answer = str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
         return f"{answer}\n- 需要補充或確認：{missing}" if missing else answer
     if intent == "claim":
-        evaluation = result.get("numeric_evaluation")
         answer = str(result.get("summary") or NOT_ENOUGH_EVIDENCE)
+        findings = result.get("findings", [])
+        if isinstance(findings, list) and findings:
+            lines = [answer]
+            for finding in findings:
+                if not isinstance(finding, dict):
+                    continue
+                evaluation = finding.get("evaluation")
+                claim = finding.get("claim") or "營養宣稱"
+                if isinstance(evaluation, dict):
+                    result_word = "符合" if evaluation.get("met") else "不符合"
+                    lines.append(
+                        f"- 「{claim}」：{evaluation.get('basis', '來源條件')} {evaluation.get('actual')}，"
+                        f"門檻 {evaluation.get('comparison')} {evaluation.get('threshold')}，{result_word}。"
+                    )
+                else:
+                    lines.append(f"- 「{claim}」：目前資料不足，無法完成數值判定。")
+            return "\n".join(lines)
+        evaluation = result.get("numeric_evaluation")
         if isinstance(evaluation, dict):
             return (
                 f"{answer}\n- 比較基準：{evaluation.get('basis', '來源條件')}\n"
@@ -706,6 +876,84 @@ def _structured_fallback_answer(
     return NOT_ENOUGH_EVIDENCE
 
 
+def _regulation_fallback_answer(question: str, payload: dict[str, Any]) -> str:
+    """Summarize retrieved regulation evidence when no LLM is available."""
+
+    sources = payload.get("sources", [])
+    if not isinstance(sources, list) or not sources:
+        return NOT_ENOUGH_EVIDENCE
+
+    compact_question = re.sub(r"\s+", "", str(question or ""))
+    if any(term in compact_question for term in ("過敏原", "乳製品", "牛奶", "羊奶", "奶類", "乳類")):
+        focus_terms = ("過敏原", "乳製品", "牛奶", "羊奶", "奶類", "乳類", "標示")
+    elif any(term in compact_question for term in ("營養標示", "營養成分", "熱量", "蛋白質", "脂肪", "糖", "鈉")):
+        focus_terms = ("營養標示", "營養成分", "熱量", "蛋白質", "脂肪", "糖", "鈉")
+    else:
+        focus_terms = tuple(str(item) for item in compact_question if item.strip())
+
+    excerpts: list[str] = []
+    for source in sources[:5]:
+        if not isinstance(source, dict):
+            continue
+        text = " ".join(
+            str(source.get("relevant_excerpt") or source.get("text") or "").split()
+        )
+        if not text:
+            continue
+        segments = [
+            item.strip()
+            for item in re.split(r"(?<=[。！？；])", text)
+            if item.strip()
+        ]
+        matching = [item for item in segments if any(term in item for term in focus_terms)]
+        candidate = "；".join(matching[:2]) if matching else text
+        candidate = candidate[:220].rstrip()
+        if candidate and candidate not in excerpts:
+            excerpts.append(candidate)
+        if len(excerpts) >= 3:
+            break
+
+    if not excerpts:
+        return NOT_ENOUGH_EVIDENCE
+    lines = ["依目前檢索到的官方資料，與問題直接相關的重點如下："]
+    lines.extend(f"- {excerpt}" for excerpt in excerpts)
+    lines.append("以上是檢索證據摘要；實際標示文字仍須依完整規範、產品配方與包裝型態確認。")
+    return "\n".join(lines)
+
+
+def _food_database_query(message: str) -> str:
+    """Extract a food name from a structured-database question."""
+
+    cleaned = str(message or "")
+    for term in (
+        "食品營養成分資料庫", "食品成分資料庫", "資料庫中的", "資料庫裡的",
+        "中的", "裡的", "裡面", "查詢", "查一下", "請問", "食品成分", "營養成分", "有哪些", "是多少",
+        "的營養成分", "營養資料",
+    ):
+        cleaned = cleaned.replace(term, "")
+    cleaned = re.sub(r"[，。？！?、：:（）()\s]", "", cleaned)
+    return cleaned or str(message or "").strip()
+
+
+def _food_database_fallback_answer(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {})
+    if result.get("status") != "pass":
+        return str(result.get("message") or "目前食品成分資料庫找不到相符樣品。")
+    lines = ["以下為 TFDA 食品成分資料庫中相符樣品的每100克資料："]
+    labels = ("熱量", "蛋白質", "脂肪", "碳水化合物", "糖", "鈉", "膳食纖維")
+    for item in result.get("results", []):
+        lines.append(f"- {item.get('name')}（樣品編號：{item.get('sample_id')}）：")
+        nutrients = item.get("nutrients_per_100g", {})
+        values = []
+        for label in labels:
+            value = nutrients.get(label)
+            if isinstance(value, dict) and value.get("value") is not None:
+                values.append(f"{label} {value['value']} {value.get('unit') or ''}".strip())
+        lines.append("  " + ("、".join(values) if values else "沒有可呈現的常見營養項目"))
+    lines.append("資料庫值是食品樣品的參考資料，不等同於使用者產品包裝上的營養標示。")
+    return "\n".join(lines)
+
+
 def _nutrition_reference_answer(result: dict[str, Any]) -> str:
     nutrient = result.get("nutrient") or "這項營養素"
     nutrient_label = {
@@ -713,6 +961,13 @@ def _nutrition_reference_answer(result: dict[str, Any]) -> str:
         "iron": "鐵", "potassium": "鉀", "vitamin_d": "維生素D", "magnesium": "鎂", "zinc": "鋅",
     }.get(nutrient, nutrient)
     selected = result.get("selected")
+    if "age_group_reference" in result.get("missing_information", []):
+        age = result.get("age")
+        age_text = f"{age} 歲" if age is not None else "這個年齡層"
+        return (
+            f"目前 DRIs 資料庫沒有適用於 {age_text} 的{nutrient_label}參考值，"
+            "因此不能計算與該年齡層的每日 DRIs 百分比；目前資料不會把成人數值套用到兒童。"
+        )
     if isinstance(selected, dict):
         return (
             f"{nutrient_label}：{selected.get('reference_value')} {selected.get('unit')}（{selected.get('reference_type')}）。\n"
@@ -737,7 +992,7 @@ def _nutrition_reference_answer(result: dict[str, Any]) -> str:
 
 
 def _current_product_answer(question: str, product: dict[str, Any]) -> str:
-    """Answer simple product-value questions from the parsed label first."""
+    """Answer product questions without treating nutrient words in names as fields."""
 
     name = str(product.get("product_name") or "目前食品")
     nutrition = product.get("nutrition", {})
@@ -753,8 +1008,58 @@ def _current_product_answer(question: str, product: dict[str, Any]) -> str:
         (("脂肪", "fat"), "fat_g", "脂肪", "g"),
     )
     compact = re.sub(r"\s+", "", question).casefold()
+    # Product names often contain nutrient words, such as「高蛋白豆漿」or
+    # 「低糖燕麥飲」.  Those words are not evidence that the user asked for
+    # that nutrient, so remove the known product name before field matching.
+    product_name = re.sub(r"\s+", "", name).casefold()
+    question_terms = compact.replace(product_name, "") if product_name else compact
+
+    # A request for a label or ingredient list is broader than a single-field
+    # lookup.  Handle it first so「高蛋白豆漿的營養標示」returns the complete
+    # label instead of only the protein value.
+    wants_ingredients = any(term in question_terms for term in ("成分", "原料", "配料", "配方"))
+    wants_label_summary = any(
+        term in question_terms for term in ("成分標示", "營養標示", "營養成分", "營養資訊")
+    )
+    if wants_ingredients or wants_label_summary:
+        ingredients = [
+            str(item) for item in product.get("ingredients", []) if str(item).strip()
+        ]
+        lines = [f"依目前「{name}」的產品資料："]
+        lines.append(
+            f"- 成分：{'、'.join(ingredients)}"
+            if ingredients
+            else "- 目前沒有可讀取的成分資料。"
+        )
+        if wants_label_summary:
+            labels = (
+                ("calories_kcal", "熱量", "kcal"),
+                ("protein_g", "蛋白質", "g"),
+                ("fat_g", "脂肪", "g"),
+                ("carbohydrate_g", "碳水化合物", "g"),
+                ("sugar_g", "糖", "g"),
+                ("sodium_mg", "鈉", "mg"),
+                ("fiber_g", "膳食纖維", "g"),
+            )
+            basis = nutrition.get("nutrition_basis") or {}
+            if isinstance(basis, dict) and basis.get("amount") is not None:
+                lines.append(
+                    f"- 營養標示基準：每 {basis.get('amount'):g}{basis.get('unit', '')}"
+                )
+            available = [
+                f"{label} {values[field]:g} {unit}"
+                for field, label, unit in labels
+                if values.get(field) is not None
+            ]
+            lines.append(
+                f"- 營養標示：{'、'.join(available)}"
+                if available
+                else "- 目前沒有可讀取的營養數值。"
+            )
+        return "\n".join(lines)
+
     for terms, field, label, unit in field_map:
-        if any(term.casefold() in compact for term in terms):
+        if any(term.casefold() in question_terms for term in terms):
             value = values.get(field)
             if value is None:
                 return f"目前「{name}」的營養資料沒有提供{label}數值，不能自行推算。"
@@ -880,6 +1185,8 @@ def _general_fallback_answer(question: str) -> str:
         return "日本的首都是東京。"
     if any(term in compact for term in ("中國位於哪裡", "中國在哪裡", "中國的位置")):
         return "中國位於東亞，東臨太平洋。"
+    if any(term in compact for term in ("台灣位於哪裡", "台灣在哪裡", "台灣的位置")):
+        return "台灣位於東亞、西太平洋，鄰近中國大陸、日本與菲律賓。"
     if "2+2" in compact or "2＋2" in compact:
         return "2 + 2 = 4。"
     if "mcp" in compact and "什麼" in question:
@@ -910,7 +1217,7 @@ async def _llm_general_answer(
             messages=[
                 {
                     "role": "system",
-                    "content": "你是 FoodGuard 的一般問答助理。以繁體中文回答，不要聲稱已取得即時資料，也不要捏造來源。若問題涉及目前食品，優先使用輸入的產品資料。若問題只詢問外觀、顏色、形狀或其他一般常識，只回答該問題，不要延伸成食品法規、致癌或健康風險判斷。",
+                    "content": "你是 FoodGuard 食品標示法規助理。以繁體中文回答；簡單問題直接且簡潔，食品法規、宣稱合規或數值門檻問題只能依官方資料、檢索證據與產品資訊回答，不得捏造法規或數字。若證據不足，明確說明目前知識庫找不到足夠依據。與食品無關的問題，簡短說明本系統主要處理食品標示與營養法規。若問題只詢問外觀、顏色、形狀或其他一般常識，只回答該問題，不要延伸成食品法規、致癌或健康風險判斷。",
                 },
                 {
                     "role": "user",
@@ -1074,16 +1381,33 @@ def _deterministic_analysis_summary(
     elif nutrition.get("status") == "pass":
         lines.append("- 營養標示欄位已依目前資料完成辨識。")
 
-    claim_evaluation = claim.get("numeric_evaluation")
-    claim_name = claim.get("claim") or "、".join(claim.get("claims", []))
-    if isinstance(claim_evaluation, dict):
-        lines.append(
-            f"- 「{claim_name or '營養宣稱'}」的{claim_evaluation.get('basis', '標示基準')}數值為 "
-            f"{claim_evaluation.get('actual')}，{'符合' if claim_evaluation.get('met') else '不符合'}數值條件；"
-            "仍須一併符合其他標示規定。"
-        )
-    elif claim.get("status") not in {None, "not_applicable"}:
-        lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
+    claim_findings = claim.get("findings", [])
+    if isinstance(claim_findings, list) and claim_findings:
+        for finding in claim_findings:
+            if not isinstance(finding, dict):
+                continue
+            claim_evaluation = finding.get("evaluation")
+            claim_name = finding.get("claim") or "營養宣稱"
+            if isinstance(claim_evaluation, dict):
+                lines.append(
+                    f"- 「{claim_name}」的{claim_evaluation.get('basis', '標示基準')}數值為 "
+                    f"{claim_evaluation.get('actual')}，"
+                    f"{'符合' if claim_evaluation.get('met') else '不符合'}數值條件；"
+                    "仍須一併符合其他標示規定。"
+                )
+            else:
+                lines.append(f"- 「{claim_name}」目前無法完成數值判定。")
+    else:
+        claim_evaluation = claim.get("numeric_evaluation")
+        claim_name = claim.get("claim") or "、".join(claim.get("claims", []))
+        if isinstance(claim_evaluation, dict):
+            lines.append(
+                f"- 「{claim_name or '營養宣稱'}」的{claim_evaluation.get('basis', '標示基準')}數值為 "
+                f"{claim_evaluation.get('actual')}，{'符合' if claim_evaluation.get('met') else '不符合'}數值條件；"
+                "仍須一併符合其他標示規定。"
+            )
+        elif claim.get("status") not in {None, "not_applicable"}:
+            lines.append(f"- {claim.get('summary', NOT_ENOUGH_EVIDENCE)}")
 
     insights = task_results.get("nutrition_insights", {}).get("result", {})
     important = insights.get("important_nutrients", []) if isinstance(insights, dict) else []
@@ -1417,11 +1741,13 @@ class FoodGuardMCPClient:
             web_search,
             fetch_web_page_tool,
             search_disease_guideline,
+            search_food_composition,
             search_food_regulation,
             search_health_risk,
         )
 
         return {
+            "search_food_composition": search_food_composition,
             "search_food_regulation": search_food_regulation,
             "check_allergens": check_allergens,
             "check_nutrition_label": check_nutrition_label,
@@ -1500,9 +1826,9 @@ class FoodGuardMCPClient:
         ]
         self._last_previous_context = previous_users[-1] if previous_users else None
         contextual_query = _fallback_query(self.history, user_message)
-        intent = _fallback_intent(user_message)
+        intent = _fallback_intent(user_message, self.current_product)
         if intent == "general_knowledge" and _is_contextual_followup(user_message):
-            contextual_intent = _fallback_intent(contextual_query)
+            contextual_intent = _fallback_intent(contextual_query, self.current_product)
             if contextual_intent != "general_knowledge":
                 intent = contextual_intent
         if self.consumption_context and (
@@ -1513,7 +1839,7 @@ class FoodGuardMCPClient:
         if (
             _is_contextual_followup(user_message)
             and intent in {"intake", "general_knowledge", "current_product_question"}
-            and _fallback_intent(contextual_query) == "health_risk"
+            and _fallback_intent(contextual_query, self.current_product) == "health_risk"
         ):
             intent = "health_risk"
         if intent == "current_product_question":
@@ -1529,6 +1855,16 @@ class FoodGuardMCPClient:
                 or any(term in user_message for term in ("男性", "女性", "男生", "女生"))
             ):
                 intent = "consumption"
+            elif (
+                self.consumption_context
+                and _is_contextual_followup(user_message)
+                and not _mentions_current_product(user_message, self.current_product)
+            ):
+                # After a question such as「喝 500ml 有多少蛋白質？」,
+                # 「鈉呢？」continues the same consumed-amount calculation.
+                # An explicit「這瓶／這個產品」reference still means the
+                # original label and remains product_context.
+                intent = "consumption"
         elif intent == "disease_guidance":
             intent = "health_guidance"
         elif intent == "current_information":
@@ -1540,9 +1876,9 @@ class FoodGuardMCPClient:
                 intent = "claim"
         if intent == "search" and (
             len(user_message.strip()) <= 12
-            or _fallback_intent(contextual_query) == "health_risk"
+            or _fallback_intent(contextual_query, self.current_product) == "health_risk"
         ):
-            contextual_intent = _fallback_intent(contextual_query)
+            contextual_intent = _fallback_intent(contextual_query, self.current_product)
             if contextual_intent != "search":
                 intent = contextual_intent
         if intent == "search" and self.consumption_context and any(
@@ -1613,7 +1949,10 @@ class FoodGuardMCPClient:
             product = self.current_product or {}
             tool_name = "search_food_regulation"
             arguments: dict[str, Any] = {"query": contextual_query}
-            if intent == "allergen":
+            if intent == "food_database":
+                tool_name = "search_food_composition"
+                arguments = {"query": _food_database_query(user_message), "limit": 5}
+            elif intent == "allergen":
                 ingredients = product.get("ingredients", [])
                 if not ingredients:
                     answer = "請先提供食品成分，才能辨識可能的過敏原。"
@@ -1806,9 +2145,12 @@ class FoodGuardMCPClient:
             answer_source = "web" if self._last_web_result and self._last_web_result.get("results") else "fallback"
         else:
             answer_source = "mixed" if called_tools else "fallback"
-        # Consumption output stays rule-engine authoritative: a model may
-        # explain numbers, but it must not rewrite or omit deterministic facts.
-        if intent in {"health_guidance", "health_risk"} and self._llm is not None:
+        # Consumption and disease-guidance output stay deterministic.  A small
+        # local model can latch onto an unrelated passage in a long disease
+        # guide (for example medication storage) and answer that instead of
+        # the food question.  Keep the verified product/nutrition context and
+        # official-guidance guard as the public answer for health guidance.
+        if intent == "health_risk" and self._llm is not None:
             generated = await _llm_followup_answer(
                 self._llm,
                 self.model,
@@ -2009,11 +2351,15 @@ class FoodGuardMCPClient:
         # The small local model is slow and unreliable at deciding whether to
         # call a tool. Health questions can be routed deterministically first,
         # which both reduces latency and guarantees the disease guide is used.
-        routed_intent = _fallback_intent(user_message)
+        routed_intent = _fallback_intent(user_message, self.current_product)
         if routed_intent == "search":
-            routed_intent = _fallback_intent(_fallback_query(self.history, user_message))
+            routed_intent = _fallback_intent(
+                _fallback_query(self.history, user_message), self.current_product
+            )
         elif routed_intent == "general_knowledge" and _is_contextual_followup(user_message):
-            contextual_intent = _fallback_intent(_fallback_query(self.history, user_message))
+            contextual_intent = _fallback_intent(
+                _fallback_query(self.history, user_message), self.current_product
+            )
             if contextual_intent != "general_knowledge":
                 routed_intent = contextual_intent
         if routed_intent == "search" and self.consumption_context and any(
@@ -2046,6 +2392,7 @@ class FoodGuardMCPClient:
             "current_information",
             "web_search_required",
             "food_regulation",
+            "food_database",
         }:
             return await self._ask_without_llm(user_message)
         if self._llm is None:
@@ -2135,7 +2482,7 @@ class FoodGuardMCPClient:
                     not sources
                     and not fallback_attempted
                     and _looks_like_food_question(user_message)
-                    and _fallback_intent(user_message) != "general_knowledge"
+                    and _fallback_intent(user_message, self.current_product) != "general_knowledge"
                     and "search_food_regulation" in self.tool_names
                 ):
                     fallback_attempted = True
@@ -2185,7 +2532,7 @@ class FoodGuardMCPClient:
                     tool_calls=called_tools,
                     evidence_synthesis=synthesize_evidence(sources),
                     diagnostics=self._diagnostics(
-                        intent=_fallback_intent(user_message),
+                        intent=_fallback_intent(user_message, self.current_product),
                         tool_calls=called_tools,
                         sources=sources,
                         answer_source="direct_llm" if assistant_text else "fallback",

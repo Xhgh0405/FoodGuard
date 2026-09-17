@@ -31,7 +31,8 @@ def _ensure_vector_store() -> str | None:
     Building embeddings can take minutes and can fail when the embedding model
     is not cached.  The MCP server has an explicit keyword-search fallback, so
     the UI should remain usable and let operators build the FAISS index
-    separately (or opt in with FOODGUARD_AUTO_BUILD_INDEX=1).
+    separately (or disable automatic local-index creation with
+    FOODGUARD_AUTO_BUILD_INDEX=0).
     """
 
     from rag.config import documents_dir, vector_store_dir
@@ -41,7 +42,7 @@ def _ensure_vector_store() -> str | None:
     if destination.exists() and all((destination / name).exists() for name in required_files):
         return None
 
-    auto_build = os.getenv("FOODGUARD_AUTO_BUILD_INDEX", "0").strip().lower() in {
+    auto_build = os.getenv("FOODGUARD_AUTO_BUILD_INDEX", "1").strip().lower() in {
         "1", "true", "yes"
     }
     if not auto_build:
@@ -358,10 +359,11 @@ def _render_result_card(
         status_text, status_class = f"⚠️ 已辨識到 {detected_count} 類潛在過敏原", "warn"
     sources = payload.get("sources", [])
     result = payload.get("result", {})
-    structured_source = result.get("structured_rule_source")
-    display_sources = sources
-    if not display_sources and isinstance(structured_source, dict):
-        display_sources = [structured_source]
+    structured_sources = result.get("structured_rule_sources")
+    if not isinstance(structured_sources, list):
+        structured_source = result.get("structured_rule_source")
+        structured_sources = [structured_source] if isinstance(structured_source, dict) else []
+    display_sources = sources or structured_sources
     with st.container(border=True):
         st.markdown(
             f'<div class="result-title">{display_title}</div>',
@@ -416,6 +418,38 @@ def _nutrition_details(result: dict[str, Any]) -> list[str]:
 def _claim_details(result: dict[str, Any]) -> list[str]:
     if result.get("status") == "not_applicable":
         return ["此食品未提供營養宣稱，因此不進行宣稱門檻判定。"]
+    findings = result.get("findings")
+    if isinstance(findings, list) and findings:
+        details: list[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            claim = finding.get("claim") or "營養宣稱"
+            evaluation = finding.get("evaluation")
+            if isinstance(evaluation, dict):
+                actual = evaluation.get("actual")
+                threshold = evaluation.get("threshold")
+                basis = evaluation.get("basis", "來源基準")
+                input_value = evaluation.get("input_value")
+                input_amount = evaluation.get("input_amount")
+                input_unit = evaluation.get("input_unit") or ""
+                conversion = ""
+                if all(isinstance(item, (int, float)) for item in (input_value, input_amount)):
+                    conversion = f"原標示每{input_amount:g}{input_unit}為 {input_value:g}，換算後 "
+                result_word = "符合" if evaluation.get("met") else "不符合"
+                details.append(
+                    f"「{claim}」{conversion}{basis} {actual:g}，"
+                    f"來源條件 {evaluation.get('comparison')} {threshold:g}，{result_word}數值條件。"
+                )
+                continue
+            threshold_rule = finding.get("threshold")
+            if isinstance(threshold_rule, dict):
+                nutrient = threshold_rule.get("nutrient") or "對應營養素"
+                details.append(f"「{claim}」暫時無法判定，請確認{nutrient}數值與每份基準量。")
+            else:
+                details.append(f"「{claim}」目前找不到足夠依據完成判定。")
+        if details:
+            return details
     evaluation = result.get("numeric_evaluation")
     if evaluation:
         actual = evaluation.get("actual")

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from .parsing import FIELD_LABELS
+from .parsing import FIELD_LABELS, parse_claims
 from .claim_rules import evaluate_claim_rule
 
 
@@ -214,7 +214,7 @@ def _extract_high_threshold(claim: str, evidence: Iterable[dict[str, Any]]) -> d
 def analyse_nutrition_claim(
     claim: str, nutrition: dict[str, Any], evidence: Iterable[dict[str, Any]]
 ) -> dict[str, Any]:
-    claims = [item.strip() for item in str(claim or "").split("、") if item.strip()]
+    claims = parse_claims(claim)
     if not claims:
         return {
             "status": "not_applicable",
@@ -228,13 +228,24 @@ def analyse_nutrition_claim(
         }
 
     evidence = list(evidence)
-    # Evaluate the versioned structured rule before requiring text evidence.
-    # This allows complete label data to be judged even when the optional
-    # vector index is unavailable, while incomplete input remains explicitly
-    # marked as insufficient.
-    structured = evaluate_claim_rule(claims[0], nutrition)
-    evaluation: dict[str, Any] | None = structured.get("evaluation") if structured else None
-    if not evidence and not structured:
+    # Evaluate every claim independently.  A combined input such as
+    # 「低脂、無糖」 must not silently use only the first claim's nutrient.
+    # Structured rules are checked before requiring text evidence so complete
+    # label data can still be judged when the optional vector index is absent.
+    claim_results: list[dict[str, Any]] = []
+    for item in claims:
+        structured = evaluate_claim_rule(item, nutrition)
+        evaluation = structured.get("evaluation") if structured else None
+        claim_results.append(
+            {
+                "claim": item,
+                "structured": structured,
+                "evaluation": evaluation,
+                "threshold": structured.get("rule") if structured else _extract_high_threshold(item, evidence),
+            }
+        )
+
+    if not evidence and not any(item["structured"] for item in claim_results):
         return {
             "status": "insufficient_evidence",
             "regulation_evidence_status": "insufficient",
@@ -246,73 +257,71 @@ def analyse_nutrition_claim(
             "claims": claims,
         }
 
-    # Keep the structured rule even when the user's label is missing a value
-    # or serving basis.  The rule itself is still useful evidence and lets the
-    # UI explain exactly what information is missing.
-    threshold = (
-        structured.get("rule")
-        if structured
-        else _extract_high_threshold(claims[0], evidence)
-    )
-    status = "insufficient_evidence" if not evidence else "warning"
-    summary = "已找到營養宣稱相關依據，但目前無法從來源完整抽取適用條件。"
-    recommendations = ["若產品型態、基準量或宣稱文字不同，請再確認適用條件。"]
-    if structured and evaluation:
-        status = "pass" if evaluation["met"] else "fail"
-        comparison = evaluation.get("comparison", "")
-        summary = (
-            f"「{claims[0]}」的{evaluation['basis']}數值為 {evaluation['actual']}，"
-            f"與官方門檻 {comparison} {evaluation['threshold']} 比較後，"
-            f"{ '符合' if evaluation['met'] else '不符合' }數值條件；仍須一併符合其他標示規定。"
-        )
-    elif structured:
-        rule = structured.get("rule", {})
-        field = rule.get("field", "對應營養素")
-        values = nutrition.get("values", {})
-        actual = values.get(field) if isinstance(values, dict) else None
-        if actual is None:
-            summary = f"「{claims[0]}」目前缺少「{rule.get('nutrient', field)}」數值，因此暫時無法完成判定。"
-            recommendations = [f"請補充營養標示中的「{rule.get('nutrient', field)}」數值。"]
+    findings: list[dict[str, Any]] = []
+    for item in claim_results:
+        evaluation = item["evaluation"]
+        if evaluation:
+            finding_status = "pass" if evaluation["met"] else "fail"
+        elif item["structured"]:
+            finding_status = "insufficient_evidence"
         else:
-            summary = "目前已有營養數值，但缺少每份的公克／毫升基準量，暫時無法換算判定。"
-            recommendations = ["請補充每一份量及單位（公克或毫升），才能依每100公克／毫升判讀。"]
-    elif threshold and "solid_threshold" in threshold:
-        values = nutrition.get("values", {})
-        actual = values.get(threshold["field"])
-        serving_size = str(nutrition.get("serving_size") or "")
-        if actual is not None and re.search(r"(?:毫升|ml|mL)", serving_size):
-            size_match = re.search(r"([0-9]+(?:\.[0-9]+)?)", serving_size)
-            if size_match and float(size_match.group(1)) > 0:
-                actual_per_100ml = actual / float(size_match.group(1)) * 100
-                evaluation = {
-                    "basis": "每100毫升",
-                    "actual": actual_per_100ml,
-                    "threshold": threshold["liquid_threshold_per_100ml"],
-                    "comparison": threshold["comparison"],
-                    "met": actual_per_100ml >= threshold["liquid_threshold_per_100ml"],
-                }
-        elif actual is not None:
-            evaluation = {
-                "basis": "每份（尚未換算為法規基準）",
-                "actual": actual,
-                "threshold": threshold["solid_threshold"],
-                "comparison": threshold["comparison"],
-                "met": actual >= threshold["solid_threshold"],
+            finding_status = "warning" if evidence else "insufficient_evidence"
+        findings.append(
+            {
+                "claim": item["claim"],
+                "status": finding_status,
+                "evaluation": evaluation,
+                "threshold": item["threshold"],
             }
-        if evaluation is not None:
-            status = "pass" if evaluation["met"] else "fail"
-            summary = (
-                f"「{claims[0]}」的{evaluation['basis']}數值為 {evaluation['actual']}，"
-                f"與來源門檻 {evaluation['comparison']} {evaluation['threshold']} 比較後，"
-                f"{ '符合' if evaluation['met'] else '不符合' }數值條件。"
+        )
+
+    evaluated = [item for item in findings if isinstance(item.get("evaluation"), dict)]
+    if any(item.get("status") == "fail" for item in findings):
+        status = "fail"
+    elif any(item.get("status") == "insufficient_evidence" for item in findings):
+        status = "insufficient_evidence"
+    elif all(item.get("status") == "pass" for item in findings):
+        status = "pass"
+    else:
+        status = "warning"
+
+    parts: list[str] = []
+    for item in findings:
+        evaluation = item.get("evaluation")
+        if isinstance(evaluation, dict):
+            result_word = "符合" if evaluation.get("met") else "不符合"
+            parts.append(
+                f"「{item['claim']}」{evaluation.get('basis', '標示基準')}為 "
+                f"{evaluation.get('actual')}，{result_word}數值條件"
             )
+        else:
+            parts.append(f"「{item['claim']}」目前無法完成數值判定")
+    summary = "；".join(parts) + "。"
+    if evaluated:
+        summary += "仍須一併符合其他標示規定。"
+    recommendations = ["若產品型態、基準量或宣稱文字不同，請再確認適用條件。"]
+    missing_nutrients = [
+        str(item["threshold"].get("nutrient"))
+        for item in findings
+        if item.get("evaluation") is None
+        and isinstance(item.get("threshold"), dict)
+        and item["threshold"].get("nutrient")
+    ]
+    if missing_nutrients:
+        recommendations.insert(0, f"請補充或確認：{'、'.join(dict.fromkeys(missing_nutrients))}及每份基準量。")
+
+    first = findings[0]
+    threshold = first.get("threshold")
+    evaluation = first.get("evaluation")
 
     return {
         "status": status,
-        "regulation_evidence_status": "sufficient" if evidence or (structured and evaluation) else "insufficient",
+        "regulation_evidence_status": "sufficient"
+        if evidence or any(item["structured"] and item["evaluation"] for item in claim_results)
+        else "insufficient",
         "title": "營養宣稱",
         "summary": summary,
-        "findings": [{"claim": item, "evaluation": evaluation} for item in claims],
+        "findings": findings,
         "claim": "、".join(claims),
         "claims": claims,
         "threshold": threshold,

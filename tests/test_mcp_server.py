@@ -82,6 +82,47 @@ def test_empty_claim_is_not_applicable_and_skips_rag(monkeypatch) -> None:
     assert response["debug_evidence"]["skipped"] == "claim_not_provided"
 
 
+def test_multiple_claims_return_one_finding_per_claim(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "rag_search", lambda query, top_k=5: [])
+    response = mcp_server.check_nutrition_claim(
+        "低脂、無糖",
+        {
+            "raw_text": "每100毫升\n脂肪 1.5 g\n糖 0.4 g",
+            "values": {"fat_g": 1.5, "sugar_g": 0.4},
+            "nutrition_basis": {"amount": 100, "unit": "ml"},
+        },
+    )
+
+    findings = response["result"]["findings"]
+    assert [item["claim"] for item in findings] == ["低脂", "無糖"]
+    assert all(item["evaluation"] is not None for item in findings)
+
+
+def test_unmatched_claim_does_not_turn_tool_failure_into_missing_rag(monkeypatch) -> None:
+    """An unsupported claim should return a guarded result, not crash the tool."""
+
+    monkeypatch.setattr(mcp_server, "rag_search", lambda query, top_k=5: [])
+    monkeypatch.setattr(
+        mcp_server,
+        "search_web",
+        lambda *args, **kwargs: {"status": "unavailable", "results": []},
+    )
+
+    response = mcp_server.check_nutrition_claim(
+        "健康美味",
+        {"raw_text": "每100毫升\n熱量 48 kcal"},
+    )
+
+    assert response["result"]["status"] in {
+        "insufficient_evidence",
+        "not_applicable",
+        "warning",
+        "fail",
+        "pass",
+    }
+    assert "UnboundLocalError" not in response["result"].get("message", "")
+
+
 def test_consumption_calculator_is_deterministic() -> None:
     response = mcp_server.calculate_consumption_nutrients(
         {

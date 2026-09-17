@@ -58,3 +58,18 @@ def test_structured_claim_rule_evaluates_high_protein_without_raw_chunk_regex() 
     assert result["threshold"]["source_page"] == 7
     assert result["numeric_evaluation"]["actual"] == 7
     assert result["status"] == "pass"
+
+
+def test_multiple_claims_are_evaluated_independently() -> None:
+    result = analyse_nutrition_claim(
+        "低脂、無糖",
+        {
+            "nutrition_basis": {"amount": 100, "unit": "ml"},
+            "values": {"fat_g": 1.5, "sugar_g": 0.4},
+        },
+        [],
+    )
+
+    assert result["status"] == "pass"
+    assert [item["claim"] for item in result["findings"]] == ["低脂", "無糖"]
+    assert all(item["evaluation"]["met"] for item in result["findings"])

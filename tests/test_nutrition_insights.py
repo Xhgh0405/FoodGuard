@@ -56,6 +56,25 @@ def test_qa32_and_qa33_dri_context_switches_sex() -> None:
     assert male["selected"]["reference_type"] == "RDA"
 
 
+def test_child_dri_does_not_fall_back_to_adult_reference() -> None:
+    result = lookup_dri("蛋白質", {"age": 10, "sex": "male"})
+
+    assert result["status"] == "not_found"
+    assert result["records"] == []
+    assert "age_group_reference" in result["missing_information"]
+
+
+def test_child_nutrition_comparison_reports_missing_age_group_reference() -> None:
+    insight = build_nutrition_insights(
+        soy_product(),
+        {"amount": 300, "unit": "ml"},
+        {"age": 10, "sex": "male"},
+    )
+
+    assert insight["reference_comparisons"] == []
+    assert "age_group_reference" in insight["missing_information"]
+
+
 def test_qa34_and_qa35_dri_type_and_nutrient_are_structured() -> None:
     sodium = lookup_dri("鈉", {})
     potassium = lookup_dri("鉀", {"age": 30, "sex": "female"})

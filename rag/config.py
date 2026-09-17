@@ -33,4 +33,7 @@ def vector_store_dir() -> Path:
 
 def embedding_model_name() -> str:
     _load_env()
-    return os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    # The local backend is deterministic, multilingual, and needs no model
+    # download, so a fresh deployment can build its vector index on startup.
+    # Transformer/Ollama backends remain available through EMBEDDING_MODEL.
+    return os.getenv("EMBEDDING_MODEL", "local:char-ngram-v1")

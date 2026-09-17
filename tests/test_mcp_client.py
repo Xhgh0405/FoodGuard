@@ -262,6 +262,48 @@ async def test_no_llm_allergen_question_uses_product_ingredients(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_general_allergen_label_question_searches_regulation_not_product(monkeypatch):
+    client = FoodGuardMCPClient(llm_client=None, require_api_key=False)
+    client._llm = None
+    client._mcp = object()
+    client.set_current_context(
+        {
+            "product_name": "重乳酪蛋糕",
+            "ingredients": ["奶油乳酪", "雞蛋"],
+            "nutrition": {},
+            "claims": [],
+        }
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        return {
+            "result": {"status": "pass", "summary": "已找到與問題相關的法規依據。"},
+            "sources": [
+                {
+                    "document": "食品過敏原標示規定.pdf",
+                    "page": 1,
+                    "text": "食品過敏原標示規定：乳製品應依規定清楚標示。",
+                    "score": 0.9,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "call_tool", fake_call_tool)
+    response = await client.ask("台灣食品標示中，乳製品需要如何標示過敏原？")
+
+    assert calls == [
+        (
+            "search_food_regulation",
+            {"query": "台灣食品標示中，乳製品需要如何標示過敏原？"},
+        )
+    ]
+    assert "乳製品應依規定清楚標示" in response.answer
+    assert response.diagnostics["intent"] == "food_regulation"
+
+
+@pytest.mark.anyio
 async def test_llm_error_uses_same_safe_intake_fallback(monkeypatch):
     class FailingCompletions:
         async def create(self, **kwargs: Any) -> FakeCompletion:

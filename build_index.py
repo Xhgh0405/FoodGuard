@@ -43,7 +43,11 @@ def main() -> None:
         help="Official source directory; default: documents/",
     )
     parser.add_argument("--output", type=Path, default=None, help="FAISS directory; default: data/vector_store/")
-    parser.add_argument("--model", default=None, help="sentence-transformers model name")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="sentence-transformers name, ollama:<model>, or local:char-ngram-v1",
+    )
     parser.add_argument("--chunk-size", type=int, default=1200)
     parser.add_argument("--chunk-overlap", type=int, default=200)
     args = parser.parse_args()

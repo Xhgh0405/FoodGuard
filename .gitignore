@@ -39,6 +39,7 @@ Thumbs.db
 .cache/
 .faiss/
 data/vector_store/
+data/food_composition.db
 data/foodguard_memory.db
 data/reports/
 

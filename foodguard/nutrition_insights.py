@@ -150,7 +150,8 @@ def lookup_dri(nutrient: str, profile: dict[str, Any] | None = None) -> dict[str
 
     profile = profile if isinstance(profile, dict) else {}
     nutrient = NUTRIENT_ALIASES.get(str(nutrient).casefold(), str(nutrient).casefold())
-    records = [dict(item) for item in _load_dri_records() if item.get("nutrient") == nutrient]
+    all_records = [dict(item) for item in _load_dri_records() if item.get("nutrient") == nutrient]
+    records = list(all_records)
     age = profile.get("age")
     sex = profile.get("sex")
     if age is not None:
@@ -165,9 +166,12 @@ def lookup_dri(nutrient: str, profile: dict[str, Any] | None = None) -> dict[str
         missing.append("sex")
     selected = records if len(records) == 1 or (sex and age is not None) else []
     status = "found" if selected else ("needs_profile" if records else "not_found")
-    if not records and age is not None:
-        candidates = [dict(item) for item in _load_dri_records() if item.get("nutrient") == nutrient]
-    return {"status": status, "nutrient": nutrient, "records": selected or candidates, "selected": selected[0] if len(selected) == 1 else None, "missing_information": sorted(set(missing)), "source": "data/dri_references.json"}
+    if not records and age is not None and all_records:
+        # Do not expose adult candidates as if they were valid for a child or
+        # another unsupported age group.
+        missing.append("age_group_reference")
+        candidates = []
+    return {"status": status, "nutrient": nutrient, "age": age, "records": selected or candidates, "selected": selected[0] if len(selected) == 1 else None, "missing_information": sorted(set(missing)), "source": "data/dri_references.json"}
 
 
 def _comparison_label(reference_type: str) -> str:

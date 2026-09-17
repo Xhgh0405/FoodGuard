@@ -13,6 +13,7 @@ from mcp.server import MCPServer
 
 from foodguard.evidence import retrieve_evidence
 from foodguard.context import calculate_consumption_nutrients as calculate_scaled_nutrients
+from foodguard.food_database import search_food_composition as lookup_food_composition
 from foodguard.health_risk import (
     detect_health_risk_topics,
     health_risk_sources,
@@ -43,7 +44,19 @@ mcp = MCPServer(
 )
 
 
-DISEASE_GUIDE_HINTS = ("disease_guides", "糖尿病", "高血壓", "腎臟病", "高血脂")
+DISEASE_GUIDE_HINTS = ("disease_guides",)
+DISEASE_GUIDE_PATHS = {
+    "糖尿病": "disease_guides/diabetes",
+    "高血壓": "disease_guides/hypertension",
+    "腎臟病": "disease_guides/kidney_disease",
+    "高血脂": "disease_guides/dyslipidemia",
+}
+DISEASE_DIETARY_QUERIES = {
+    "糖尿病": "糖尿病病人飲食原則 醣類 食物 份量 高纖 適量油脂",
+    "高血壓": "高血壓 飲食原則 鈉 鹽分 食物 份量",
+    "腎臟病": "腎臟病 飲食原則 蛋白質 鈉 鉀 份量",
+    "高血脂": "高血脂 飲食原則 脂肪 飽和脂肪 膽固醇 食物",
+}
 
 
 def _claim_query_expansion(claim: str) -> tuple[str, ...]:
@@ -180,7 +193,18 @@ def search_food_regulation(query: str) -> dict[str, Any]:
         )
 
     extra_queries: tuple[str, ...] = ()
-    if any(term in query for term in ("食品法", "食品法規", "食品法律", "食品標示規定有哪些")):
+    source_hints: tuple[str, ...] = ()
+    if any(term in query for term in ("過敏原", "乳製品", "牛奶", "羊奶", "奶類", "乳類")):
+        # A generic「過敏原」query can be outranked by unrelated food-law
+        # pages. Constrain this lookup to the dedicated official allergen
+        # documents and expand with relevant dairy terms.
+        source_hints = ("食品過敏原標示規定",)
+        extra_queries = (
+            "食品過敏原標示規定 乳製品 牛奶 羊奶",
+            "食品過敏原標示規定 過敏原警語 標示方式",
+            "食品過敏原標示規定 Q&A 乳類",
+        )
+    elif any(term in query for term in ("食品法", "食品法規", "食品法律", "食品標示規定有哪些")):
         extra_queries = ("食品安全衛生管理法 食品標示 食品宣傳 廣告",)
     elif any(term in query for term in ("糖尿病", "高血壓", "腎臟病", "腎病", "高血脂", "血脂")):
         # Short questions often contain only a disease and「可以嗎」. Search
@@ -191,7 +215,7 @@ def search_food_regulation(query: str) -> dict[str, Any]:
             "糖尿病與我 飲食 飲品 碳水化合物" if "糖尿病" in query else f"{query} 飲食指引",
         )
     sources, debug = _retrieve_regulation(
-        query, top_k=5, extra_queries=extra_queries
+        query, source_hints=source_hints, top_k=5, extra_queries=extra_queries
     )
     result = {
         "status": "pass" if sources else "insufficient_evidence",
@@ -205,6 +229,27 @@ def search_food_regulation(query: str) -> dict[str, Any]:
     if not sources:
         result["message"] = NOT_ENOUGH_EVIDENCE
     return _response(result, sources, debug)
+
+
+@mcp.tool()
+def search_food_composition(query: str, limit: int = 5) -> dict[str, Any]:
+    """Look up official TFDA food-composition data, separate from legal RAG."""
+
+    result = lookup_food_composition(query, limit=limit)
+    sources: list[dict[str, Any]] = []
+    if result.get("status") == "pass":
+        sources.append(
+            {
+                "document": "TFDA 臺灣食品成分資料庫官方開放資料",
+                "page": "database",
+                "text": "依食品樣品名稱查詢官方每100克食品成分資料。",
+                "quote": "TFDA 臺灣食品成分資料庫官方開放資料",
+                "score": 1.0,
+                "knowledge_domain": "food_database",
+                "source_url": "https://www.fda.gov.tw/TC/siteList.aspx?sid=284",
+            }
+        )
+    return _response(result, sources, {"structured_lookup": True})
 
 
 @mcp.tool(
@@ -225,14 +270,41 @@ def search_disease_guideline(
             {"status": "insufficient_evidence", "summary": NOT_ENOUGH_EVIDENCE, "message": NOT_ENOUGH_EVIDENCE},
             [],
         )
-    expanded = (
-        f"{disease} 飲食 注意事項 官方指引 {query} "
-        + ("糖尿病與我 碳水化合物 飲品" if "糖尿病" in f"{disease}{query}" else "")
-    ).strip()
-    sources, debug = _retrieve_regulation(
-        expanded, source_hints=DISEASE_GUIDE_HINTS, top_k=5,
-        extra_queries=(f"{disease} 飲食指南", f"{disease} 生活保健"),
+    matched_disease = next(
+        (name for name in DISEASE_DIETARY_QUERIES if name in f"{disease}{query}"),
+        disease,
     )
+    dietary_query = DISEASE_DIETARY_QUERIES.get(
+        matched_disease, f"{disease} 飲食原則 食物 份量 注意事項"
+    )
+    expanded = f"{dietary_query} {query}".strip()
+    source_hints = (
+        (DISEASE_GUIDE_PATHS[matched_disease],)
+        if matched_disease in DISEASE_GUIDE_PATHS
+        else DISEASE_GUIDE_HINTS
+    )
+    sources, debug = _retrieve_regulation(
+        expanded, source_hints=source_hints, top_k=5,
+        extra_queries=(dietary_query, f"{disease} 飲食指南 {query}", f"{disease} 生活保健"),
+    )
+    # When a disease folder has both a PDF and an HPA provenance page, prefer
+    # the actual guide: the downloaded HTML page contains site navigation that
+    # can outrank the guide's dietary pages.  Keep HTML-only disease folders
+    # searchable because some official guides are currently stored that way.
+    source_documents = [str(source.get("document", "")) for source in sources]
+    pdf_directories = {
+        document.rsplit("/", 1)[0]
+        for document in source_documents
+        if document.lower().endswith(".pdf") and "/" in document
+    }
+    if pdf_directories:
+        sources = [
+            source for source in sources
+            if not (
+                str(source.get("document", "")).lower().endswith((".html", ".htm"))
+                and str(source.get("document", "")).rsplit("/", 1)[0] in pdf_directories
+            )
+        ]
     for source in sources:
         source["knowledge_domain"] = "disease_guidance"
     result = {
@@ -495,31 +567,40 @@ def check_nutrition_claim(
         top_k=3,
         extra_queries=extra_queries,
     )
-    structured = evaluate_claim_rule(normalized_claim, nutrition)
-    rule_source = None
-    if structured and isinstance(structured.get("rule"), dict):
-        # The structured file is an official, versioned rule source. Keep it
-        # in the result even when the optional vector index has not been built.
-        # It is intentionally not added to `sources`: callers use an empty
-        # source list to distinguish missing RAG evidence.
+    structured_results = [
+        (item, evaluate_claim_rule(item, nutrition)) for item in claims
+    ]
+    structured_results = [
+        (item, result) for item, result in structured_results if result is not None
+    ]
+    rule_sources = []
+    for item, structured in structured_results:
+        if not isinstance(structured.get("rule"), dict):
+            continue
+        # The structured file is an official, versioned rule source. Keep one
+        # auditable source per claim, including when several claims are entered.
         rule = structured["rule"]
-        rule_source = {
-            "document": rule.get("source_document", "data/nutrition_claim_rules.json"),
-            "page": rule.get("source_page", "structured"),
-            "text": (
-                f"官方結構化規則：{rule.get('claim', normalized_claim)}；"
-                f"每100公克 {rule.get('operator', '')} {rule.get('threshold', {}).get('solid')}"
-                f"{rule.get('threshold_unit', '')}；每100毫升 {rule.get('operator', '')} "
-                f"{rule.get('threshold', {}).get('liquid')} {rule.get('threshold_unit', '')}。"
-            ),
-            "quote": "官方結構化營養宣稱規則",
-            "score": 1.0,
-            "knowledge_domain": "regulation",
-            "source_url": rule.get("source_url"),
-        }
+        rule_sources.append(
+            {
+                "document": rule.get("source_document", "data/nutrition_claim_rules.json"),
+                "page": rule.get("source_page", "structured"),
+                "text": (
+                    f"官方結構化規則：{rule.get('claim', item)}；"
+                    f"每100公克 {rule.get('operator', '')} {rule.get('threshold', {}).get('solid')}"
+                    f"{rule.get('threshold_unit', '')}；每100毫升 {rule.get('operator', '')} "
+                    f"{rule.get('threshold', {}).get('liquid')} {rule.get('threshold_unit', '')}。"
+                ),
+                "quote": f"官方結構化營養宣稱規則（{item}）",
+                "score": 1.0,
+                "knowledge_domain": "regulation",
+                "source_url": rule.get("source_url"),
+            }
+        )
     base_result = analyse_nutrition_claim(normalized_claim, nutrition, sources)
-    if rule_source is not None:
-        base_result["structured_rule_source"] = rule_source
+    if rule_sources:
+        base_result["structured_rule_sources"] = rule_sources
+        # Keep the singular key for older UI/state payloads.
+        base_result["structured_rule_source"] = rule_sources[0]
         # A complete label can be compared against the versioned structured
         # rule without RAG. Incomplete input remains insufficient and keeps
         # the recommendation to add data or use Web Search.
@@ -529,7 +610,13 @@ def check_nutrition_claim(
     # If there is no local structured rule, supplement the answer with
     # official web results when network search is enabled. This does not turn
     # snippets into numeric legal conclusions; it only adds auditable leads.
-    if not structured:
+    # `structured` used to refer to the loop variable above.  When no claim
+    # produced a structured rule (for example an unsupported or incomplete
+    # claim), that variable was never assigned and the tool raised
+    # UnboundLocalError.  The caller then misreported the tool failure as
+    # missing RAG evidence.  The presence of structured rule sources is the
+    # actual condition needed here.
+    if not rule_sources:
         web_result = search_web(
             f"{normalized_claim} 食品營養宣稱 官方規定",
             domains=["fda.gov.tw", "mohw.gov.tw"],
